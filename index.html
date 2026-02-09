@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="styles.css">
+    <title>AI4Cardio - Cardiac Health Analysis</title>
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar">
+            <div class="brand">
+                <div class="logo-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path
+                            d="M20.42 4.58a5.4 5.4 0 0 0-7.65 0l-.77.78-.77-.78a5.4 5.4 0 0 0-7.65 0C1.46 6.7 1.33 10.28 4 13l8 8 8-8c2.67-2.72 2.54-6.3.42-8.42z">
+                        </path>
+                    </svg>
+                </div>
+                <h2>AI4Cardio</h2>
+            </div>
+
+            <ul class="nav-links">
+                <li class="active" data-tab="home">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                        <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                    </svg>
+                    <span>Home</span>
+                </li>
+                <li data-tab="history">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                    <span>History</span>
+                </li>
+                <li data-tab="settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path
+                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                        </path>
+                    </svg>
+                    <span>Settings</span>
+                </li>
+            </ul>
+        </nav>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Startup Loader Overlay -->
+            <div id="startup-loader" class="loader-overlay">
+                <div class="progress-container">
+                    <div class="progress-bar" id="startup-progress-bar"></div>
+                </div>
+                <div class="loading-text" style="color:var(--accent); margin-top: 1rem;">System Initializing...</div>
+            </div>
+
+            <!-- Analysis Loader Overlay (Hidden by default) -->
+            <div id="loader-overlay" class="loader-overlay hidden">
+                <div class="circle-loader"></div>
+                <div class="loading-text" style="color:var(--accent)">Analyzing Data...</div>
+            </div>
+
+            <!-- Analyze Tab (Default) -->
+            <div id="home-tab" class="tab-content active">
+                <header class="tab-header">
+                    <h1>Analysis Dashboard</h1>
+                    <p class="subtitle">Upload patient data for comprehensive AI assessment</p>
+                </header>
+
+                <div class="analysis-container">
+
+                    <!-- Input Section -->
+                    <div class="input-grid">
+                        <!-- ECG Upload -->
+                        <div class="card upload-card" id="ecg-card">
+                            <div class="card-header">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef5350"
+                                    stroke-width="2">
+                                    <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+                                </svg>
+                                <h3>ECG Image</h3>
+                            </div>
+                            <div class="drop-zone" id="ecg-drop-zone">
+                                <div class="upload-icon">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="1.5">
+                                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                                        <polyline points="21 15 16 10 5 21"></polyline>
+                                    </svg>
+                                </div>
+                                <p>Upload ECG (PNG, JPG)</p>
+                                <input type="file" id="ecg-input" accept="image/*" multiple hidden>
+                            </div>
+                            <div class="file-status hidden" id="ecg-status"></div>
+                        </div>
+
+                        <!-- PDF Upload -->
+                        <div class="card upload-card" id="pdf-card">
+                            <div class="card-header">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3b82f6"
+                                    stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                                    <polyline points="10 9 9 9 8 9"></polyline>
+                                </svg>
+                                <h3>Medical Report</h3>
+                            </div>
+                            <div class="drop-zone" id="pdf-drop-zone">
+                                <div class="upload-icon">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="1.5">
+                                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                        <polyline points="14 2 14 8 20 8"></polyline>
+                                        <line x1="12" y1="18" x2="12" y2="12"></line>
+                                        <line x1="9" y1="15" x2="15" y2="15"></line>
+                                    </svg>
+                                </div>
+                                <p>Upload Report (PDF)</p>
+                                <input type="file" id="pdf-input" accept=".pdf" multiple hidden>
+                            </div>
+                            <div class="file-status hidden" id="pdf-status"></div>
+                        </div>
+                    </div>
+
+                    <!-- Submit Action -->
+                    <div class="action-area">
+                        <button id="analyze-btn" class="analyze-btn" disabled>
+                            <span>Run Analysis</span>
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <polyline points="9 18 15 12 9 6"></polyline>
+                            </svg>
+                        </button>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Results View (Hidden by default) -->
+            <div id="results-view" class="tab-content">
+                <header class="tab-header with-back">
+                    <button id="back-to-home" class="icon-btn">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="19" y1="12" x2="5" y2="12"></line>
+                            <polyline points="12 19 5 12 12 5"></polyline>
+                        </svg>
+                    </button>
+                    <div>
+                        <h1>Analysis Results</h1>
+                        <p class="subtitle">AI-Generated Assessment</p>
+                    </div>
+                </header>
+
+                <!-- Result Tabs Navigation -->
+                <div class="result-tabs">
+                    <button class="result-tab active" data-target="combined-panel">Combined Assessment</button>
+                    <button class="result-tab" data-target="ecg-analysis-panel">ECG Analysis</button>
+                    <button class="result-tab" data-target="report-analysis-panel">Report Analysis</button>
+                    <button class="result-tab" data-target="heatmap-panel">Heatmap</button>
+                    <button class="result-tab" data-target="next-steps-panel">Next Steps</button>
+                    <button class="result-tab" data-target="lifestyle-panel">Lifestyle</button>
+                    <button class="result-tab" data-target="history-panel">Raw Data</button>
+                </div>
+
+                <!-- Tab Panels -->
+                <div class="tab-panels">
+
+                    <!-- Combined Panel -> Assessment -->
+                    <div id="combined-panel" class="result-panel active">
+                        <div class="dashboard-grid">
+                            <div class="card summary-card">
+                                <h3>Clinical Assessment</h3>
+                                <div id="analysis-summary" class="markdown-body">
+                                    <div class="placeholder-text">Analysis pending...</div>
+                                </div>
+                            </div>
+                            <div class="card visual-card">
+                                <h3>ECG Preview</h3>
+                                <div class="ecg-preview-container">
+                                    <img id="ecg-preview-img" src="" alt="ECG Preview" class="preview-img">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ECG Analysis Panel -->
+                    <div id="ecg-analysis-panel" class="result-panel">
+                        <div class="card full-height">
+                            <h3>ECG Findings</h3>
+                            <div id="ecg-analysis-content" class="markdown-body">
+                                <div class="placeholder-text">Pending...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Report Analysis Panel -->
+                    <div id="report-analysis-panel" class="result-panel">
+                        <div class="card full-height">
+                            <h3>Report Findings</h3>
+                            <div id="report-analysis-content" class="markdown-body">
+                                <div class="placeholder-text">Pending...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Heatmap Panel -->
+                    <div id="heatmap-panel" class="result-panel">
+                        <div class="card full-height">
+                            <h3>Attention Heatmap</h3>
+                            <p class="info-text">Visualizes regions focused on by the model during classification.</p>
+                            <div class="heatmap-container">
+                                <img id="heatmap-img" src="" alt="Heatmap not available">
+                                <div class="overlay-legend">
+                                    <span>Low Attention (Blue)</span>
+                                    <div class="gradient-bar"></div>
+                                    <span>High Attention (Red)</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Next Steps Panel -->
+                    <div id="next-steps-panel" class="result-panel">
+                        <div class="card full-height">
+                            <h3>Recommended Next Steps</h3>
+                            <div id="next-steps-content" class="markdown-body">
+                                <div class="placeholder-text">Pending...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Lifestyle Panel -->
+                    <div id="lifestyle-panel" class="result-panel">
+                        <div class="card full-height">
+                            <h3>Lifestyle Recommendations</h3>
+                            <div id="lifestyle-content" class="markdown-body">
+                                <div class="placeholder-text">Pending...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- History Panel -> Report Data -->
+                    <div id="history-panel" class="result-panel">
+                        <div class="card full-height">
+                            <h3>Patient Medical Report Data</h3>
+                            <div id="pdf-extracted-text" class="scrollable-text">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+
+            <!-- History Tab -->
+            <div id="history-tab" class="tab-content">
+                <header class="tab-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h1>History</h1>
+                    <button id="clear-history-btn" class="primary-btn"
+                        style="background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3);">
+                        Delete All
+                    </button>
+                </header>
+                <div class="history-list" id="full-history-list">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div id="settings-tab" class="tab-content">
+                <header class="tab-header">
+                    <h1>Settings</h1>
+                </header>
+
+                <div class="settings-grid">
+                    <!-- User Profile -->
+                    <div class="card settings-card">
+                        <h3>User Profile</h3>
+                        <div class="form-group">
+                            <label for="user-name">Full Name</label>
+                            <input type="text" id="user-name" placeholder="Dr. John Doe">
+                        </div>
+                        <div class="form-group">
+                            <label for="user-id">User ID / License</label>
+                            <input type="text" id="user-id" placeholder="ID-12345">
+                        </div>
+                        <div class="form-group">
+                            <label for="user-dept">Department</label>
+                            <input type="text" id="user-dept" placeholder="Cardiology">
+                        </div>
+                        <button id="save-settings-btn" class="primary-btn" style="margin-top:1rem; width:100%">Save
+                            Profile</button>
+                    </div>
+
+                    <div class="card settings-card">
+                        <div class="setting-item">
+                            <label>Common Questions</label>
+                            <div class="chip-group">
+                                <button class="chip">What is Atrial Fibrillation?</button>
+                                <button class="chip">Explain ECG findings</button>
+                                <button class="chip">Normal heart rate range</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="renderer.js"></script>
+</body>
+
+</html>
