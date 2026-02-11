@@ -30,13 +30,15 @@ desktop.ini
 *.swp
 *.swo
 
+
 # Project Specific
-model/
-onnx_export/
+# model/  <-- Commented out to allow LFS
+# onnx_export/ <-- Commented out to allow LFS
+
 # Large specific files if any
-*.gguf
-*.bin
-*.onnx
+# *.gguf <-- Commented out for LFS
+# *.bin <-- Commented out for LFS
+# *.onnx <-- Commented out for LFS
 
 # Logs
 logs
