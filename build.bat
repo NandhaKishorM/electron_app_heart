@@ -1,21 +1,17 @@
 @echo off
-echo ===========================================
-echo Building AI4Cardio Electron App for Windows
-echo ===========================================
+echo ==========================================
+echo      AI4Cardio - Windows Build Script
+echo ==========================================
 
-echo [0/3] Cleaning previous build...
-if exist dist rmdir /s /q dist
-
-echo [1/3] Installing Dependencies...
+echo.
+echo [1/3] Clean & Install Dependencies...
 call yarn install
 
-echo [2/3] Rebuilding Native Modules...
-call .\node_modules\.bin\electron-rebuild
+echo.
+echo [2/3] Building Win64 Executable...
+call yarn electron-builder --win --x64
 
-echo [3/3] Packaging Application...
-call .\node_modules\.bin\electron-builder --win
-
-echo ===========================================
-echo Build Complete! Check the 'dist' folder.
-echo ===========================================
+echo.
+echo [3/3] Build Complete!
+echo check the 'dist' folder for your installer.
 pause

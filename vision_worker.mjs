@@ -195,7 +195,6 @@ parentPort.on('message', async (msg) => {
 
             parentPort.postMessage({
                 type: 'result',
-                description: "[ECG Analysis] Findings: ST Elevation detected (Confirmed via ViT Attention).",
                 heatmap: heatmapPath
             });
 

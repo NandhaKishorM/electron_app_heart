@@ -25,6 +25,7 @@ const AssessmentSchema = z.object({
 
 // --- Configuration ---
 const MODEL_PATH = path.join(process.cwd(), "model", "ggml-model-q4_k_m.gguf");
+const MMPROJ_PATH = path.join(process.cwd(), "model", "mmproj-medgemma-4b-ecginstruct-F16.gguf");
 
 // --- Model Initialization (Singleton) ---
 let llama = null;
@@ -66,18 +67,36 @@ export async function initializeAI(onProgress) {
     if (onProgress) onProgress("Starting AI Initialization...", 10);
 
     if (!llama) {
-        console.log("Loading Llama Model...");
+        console.log("Loading MedGemma Model...");
         try {
             llama = await getLlama();
             if (onProgress) onProgress("Loading Model File...", 30);
-            llamaModel = await llama.loadModel({ modelPath: MODEL_PATH });
+
+            // ATTEMPT MULTIMODAL LOAD
+            console.log(`Checking for MMProj at: ${MMPROJ_PATH}`);
+            const hasMMProj = await fs.pathExists(MMPROJ_PATH);
+
+            if (hasMMProj) {
+                console.log("Loading Multimodal Projector...");
+                llamaModel = await llama.loadModel({
+                    modelPath: MODEL_PATH,
+                    // Speculative: passing visual options if supported by binding
+                    visual: {
+                        modelPath: MMPROJ_PATH
+                    }
+                });
+            } else {
+                console.warn("MMProj file not found. Loading text-only model.");
+                llamaModel = await llama.loadModel({ modelPath: MODEL_PATH });
+            }
+
             if (onProgress) onProgress("Creating Context...", 50);
             llamaContext = await llamaModel.createContext(); // Default context size
             if (onProgress) onProgress("Creating Session...", 70);
             llamaSession = new LlamaChatSession({ contextSequence: llamaContext.getSequence() });
-            console.log("Llama Model Loaded.");
+            console.log("MedGemma Model Loaded.");
         } catch (err) {
-            console.error("Failed to load Llama:", err);
+            console.error("Failed to load MedGemma:", err);
             throw err;
         }
     }
@@ -112,6 +131,10 @@ const GraphState = Annotation.Root({
     ecgFindings: Annotation({
         reducer: (x, y) => y,
         default: () => "No ECG data provided.",
+    }),
+    ecgPath: Annotation({ // Added ecgPath
+        reducer: (x, y) => y,
+        default: () => null,
     }),
     reportFindings: Annotation({
         reducer: (x, y) => y,
@@ -160,7 +183,8 @@ async function ecgNode(state) {
         const result = await runVisionTask('analyze', { imagePath: ecgPath });
         return {
             ecgFindings: result.description, // Direct mapping from Worker
-            heatmapPath: result.heatmap // Map 'heatmap' from worker to 'heatmapPath' in state
+            heatmapPath: result.heatmap, // Map 'heatmap' from worker to 'heatmapPath' in state
+            ecgPath: ecgPath // Save path for synthesis node
         };
     } catch (e) {
         console.error("ECG Worker Error:", e);
@@ -213,15 +237,12 @@ async function pdfNode(state) {
 }
 
 async function synthesisNode(state) {
-    const ecgData = state.ecgFindings;
     const pdfData = state.reportFindings;
+    const ecgPath = state.ecgPath; // Get ECG Path
     const lastMessage = state.messages[state.messages.length - 1];
     const userQuery = lastMessage.content;
 
     const context = `
-ECG Analysis Findings (Visual Model):
-${ecgData}
-
 Clinical Report / Patient History (Context):
 ${pdfData}
     `.trim();
@@ -232,11 +253,14 @@ ${pdfData}
 Data:
 ${context}
 
-Task: Write a clinical assessment.
+Task: You are an expert cardiologist. Analyze the attached ECG image and the provided clinical report.
 Format your response exactly with these headers:
 
+### ECG ANALYSIS
+(Describe the ECG findings from the image. Mention rhythm, rate, intervals, axis, and ST-T changes.)
+
 ### ASSESSMENT
-(Write a detailed clinical assessment here, connecting ECG and Report findings. Be specific.)
+(Write a detailed clinical assessment, connecting your ECG observations with the Report findings.)
 
 ### NEXT STEPS
 (List 3-5 specific next steps. One per line, starting with "- ")
@@ -245,7 +269,7 @@ Format your response exactly with these headers:
 (List 3-5 lifestyle recommendations. One per line, starting with "- ")
 
 CRITICAL RULES:
-1. TRUST ECG FINDINGS: If ECG says "ST Elevation", you MUST report it.
+1. LOOK AT THE IMAGE: The ECG data is in the image file, not the text.
 2. BE CONCISE: Do not repeat yourself.
 3. FOLLOW FORMAT: Use the headers exactly.
 `;
@@ -253,11 +277,21 @@ CRITICAL RULES:
     console.log("Generatng Structured Assessment (Text)...");
 
     try {
-        const response = await llamaSession.prompt(prompt, {
+        // Speculative Multimodal Prompting
+        // We attempt to pass the image via options if supported
+        const promptOptions = {
             maxTokens: 3072,
             temperature: 0.1,
             repeatPenalty: 1.2
-        });
+        };
+
+        if (ecgPath) {
+            console.log("Passing Image to LLM (Speculative)...");
+            // Some bindings use 'images' array in options
+            promptOptions.images = [ecgPath];
+        }
+
+        const response = await llamaSession.prompt(prompt, promptOptions);
 
         console.log("Structured Text Generated. Parsing...");
 
@@ -268,10 +302,13 @@ CRITICAL RULES:
 
         try {
             // Extract Sections using Regex
+            const ecgAnalysisMatch = response.match(/### ECG ANALYSIS([\s\S]*?)(?=###|$)/i);
             const assessmentMatch = response.match(/### ASSESSMENT([\s\S]*?)(?=###|$)/i);
             const nextStepsMatch = response.match(/### NEXT STEPS([\s\S]*?)(?=###|$)/i);
             const lifestyleMatch = response.match(/### LIFESTYLE([\s\S]*?)(?=###|$)/i);
 
+            let ecgFindings = "No specific ECG analysis generated.";
+            if (ecgAnalysisMatch) ecgFindings = ecgAnalysisMatch[1].trim();
             if (assessmentMatch) assessment = assessmentMatch[1].trim();
 
             if (nextStepsMatch) {
@@ -286,18 +323,24 @@ CRITICAL RULES:
                     .filter(line => line.length > 0);
             }
 
+            // Update state with LLM-generated ECG findings
+            // Note: We are overriding the worker's (now empty) ecgFindings with the LLM's.
+            return {
+                ecgFindings: ecgFindings,
+                clinicalAssessment: assessment,
+                nextSteps: nextSteps,
+                lifestyleRecommendations: lifestyle,
+                messages: [new AIMessage({ content: "Analysis Complete" })]
+            };
+
         } catch (parseError) {
             console.error("Parsing Error:", parseError);
             assessment = response; // Fallback to raw response
+            return {
+                clinicalAssessment: assessment,
+                messages: [new AIMessage({ content: "Analysis Complete (Parse Error)" })]
+            };
         }
-
-        // Return Orchestrated State Update
-        return {
-            clinicalAssessment: assessment,
-            nextSteps: nextSteps,
-            lifestyleRecommendations: lifestyle,
-            messages: [new AIMessage({ content: "Analysis Complete" })]
-        };
 
     } catch (e) {
         console.error("Synthesis Error:", e);
