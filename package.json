@@ -49,6 +49,22 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.medical"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icon.png",
+      "category": "Science"
+    },
     "files": [
       "**/*",
       "!dist",

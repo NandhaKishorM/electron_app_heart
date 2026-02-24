@@ -28,12 +28,28 @@ Offline Desktop App for Multimodal ECG & Report Analysis.
     yarn start
     ```
 
-## Build (Windows)
+## Build Packages
 
-To create a standalone `.exe` installer:
+To create standalone application packages for different operating systems:
 
+### Windows (.exe)
 1.  Run the build script:
     ```cmd
     build.bat
     ```
-2.  The output installer will be in the `dist/` folder.
+
+### macOS (.dmg, .app)
+1. Make the script executable and run:
+    ```bash
+    chmod +x build-mac.sh
+    ./build-mac.sh
+    ```
+
+### Linux (.AppImage, .deb)
+1. Make the script executable and run:
+    ```bash
+    chmod +x build-linux.sh
+    ./build-linux.sh
+    ```
+
+**Note:** The output installers/packages will be placed in the `dist/` folder. Models are downloaded automatically upon the application's first launch.
