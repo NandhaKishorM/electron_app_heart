@@ -4,12 +4,16 @@ import path from "path";
 import fs from "fs-extra";
 import { database } from "./database.js";
 import { appAgent, initializeAI } from "./agent.js";
+import { ensureModelsDownloaded } from "./model_downloader.js";
 import { fileURLToPath } from "url";
 
 // Ensure heatmaps directory exists in User Data (Safe for Build/Dev)
 const heatmapsDir = path.join(app.getPath('userData'), 'heatmaps');
+const modelsDir = path.join(app.getPath('userData'), 'models');
 fs.ensureDirSync(heatmapsDir);
+fs.ensureDirSync(modelsDir);
 console.log("Heatmap Output Dir:", heatmapsDir);
+console.log("Models Dir:", modelsDir);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -42,13 +46,31 @@ async function createWindow() {
 app.whenReady().then(async () => {
     createWindow();
 
-    // 1. Initialize AI Models (Background)
     try {
-        console.log("Initializing AI in background...");
-        await initializeAI((msg, pct) => {
-            // Send Progress Update
-            if (mainWindow) mainWindow.webContents.send('ai-status', { status: 'loading', message: msg, percent: pct });
+        // 1. Download Models (if not already present)
+        console.log("Checking/downloading models...");
+        await ensureModelsDownloaded(modelsDir, (status) => {
+            if (mainWindow) {
+                mainWindow.webContents.send('ai-status', {
+                    status: 'downloading',
+                    message: `Downloading ${status.fileName}... ${status.downloadedMB} MB / ${status.totalMB} MB`,
+                    percent: Math.round(((status.fileIndex - 1) / status.totalFiles) * 100 + (status.percent / status.totalFiles)),
+                    fileName: status.fileName,
+                    downloadedMB: status.downloadedMB,
+                    totalMB: status.totalMB,
+                    fileIndex: status.fileIndex,
+                    totalFiles: status.totalFiles,
+                    downloadPercent: status.percent
+                });
+            }
         });
+        console.log("All models ready.");
+
+        // 2. Initialize AI Models
+        console.log("Initializing AI...");
+        await initializeAI((msg, pct) => {
+            if (mainWindow) mainWindow.webContents.send('ai-status', { status: 'loading', message: msg, percent: pct });
+        }, modelsDir);
         console.log("AI Initialized. Notifying Window.");
         isAIReady = true;
         if (mainWindow) mainWindow.webContents.send('ai-status', { status: 'ready', percent: 100 });
@@ -104,55 +126,56 @@ ipcMain.handle("analyze-case", async (event, { ecgPaths, pdfPaths, sessionId }) 
     if (!isAIReady) throw new Error("AI is still initializing. Please wait...");
     console.log("Analyzing Case:", { ecgPaths, pdfPaths, sessionId });
     try {
-        // Construct the input for the agent
-        let prompt = "Please analyze this patient case.";
-
         const ecgs = Array.isArray(ecgPaths) ? ecgPaths : (ecgPaths ? [ecgPaths] : []);
         const pdfs = Array.isArray(pdfPaths) ? pdfPaths : (pdfPaths ? [pdfPaths] : []);
 
-        ecgs.forEach((path) => { prompt += ` [ECG: ${path}]`; });
-        pdfs.forEach((path) => { prompt += ` [Report: ${path}]`; });
+        // Build PDF portion of the prompt (shared across all ECGs)
+        let pdfPromptPart = "";
+        pdfs.forEach((p) => { pdfPromptPart += ` [Report: ${p}]`; });
 
-        prompt += " Provide a comprehensive assessment including findings from the ECG(s) and history from the report(s).";
+        const results = [];
+        const total = Math.max(ecgs.length, 1);
 
-        const inputs = {
-            messages: [{ role: "user", content: prompt }]
-        };
+        for (let i = 0; i < total; i++) {
+            // Send progress
+            if (mainWindow) {
+                mainWindow.webContents.send('analysis-progress', {
+                    current: i + 1,
+                    total: total,
+                    fileName: ecgs[i] ? ecgs[i].split(/[/\\]/).pop() : 'Report Only'
+                });
+            }
 
-        const result = await appAgent.invoke(inputs);
+            let prompt = "Please analyze this patient case.";
+            if (ecgs[i]) prompt += ` [ECG: ${ecgs[i]}]`;
+            prompt += pdfPromptPart;
+            prompt += " Provide a comprehensive assessment including findings from the ECG and history from the report(s).";
 
-        // Agent now returns the full GraphState object
-        // We map this directly to the renderer response
+            const inputs = { messages: [{ role: "user", content: prompt }] };
+            const result = await appAgent.invoke(inputs);
 
-        // Save to Database (still as a single string for history view, or maybe structured?)
-        // For now, save the clinical assessment as the main "message" content
-        const assessmentContent = result.clinicalAssessment || "Analysis completed.";
-
-        if (sessionId) {
-            const firstImage = (ecgs.length > 0) ? ecgs[0] : null;
-            await database.addMessage(sessionId, 'user', "Analysis Request", firstImage);
-
-            // Save structured data as JSON string for history reconstruction
-            const historyPayload = {
+            results.push({
+                ecgPath: ecgs[i] || null,
+                ecgFileName: ecgs[i] ? ecgs[i].split(/[/\\]/).pop() : null,
                 clinical_assessment: result.clinicalAssessment,
                 ecg_findings: result.ecgFindings,
                 report_findings: result.reportFindings,
                 next_steps: result.nextSteps,
                 lifestyle_recommendations: result.lifestyleRecommendations,
                 heatmap: result.heatmapPath
-            };
+            });
+        }
+
+        // Save to DB
+        if (sessionId) {
+            const firstImage = (ecgs.length > 0) ? ecgs[0] : null;
+            await database.addMessage(sessionId, 'user', "Analysis Request", firstImage);
+
+            const historyPayload = { results };
             await database.addMessage(sessionId, 'assistant', JSON.stringify(historyPayload));
         }
 
-        return {
-            clinical_assessment: result.clinicalAssessment,
-            ecg_findings: result.ecgFindings,
-            report_findings: result.reportFindings,
-            next_steps: result.nextSteps,
-            lifestyle_recommendations: result.lifestyleRecommendations,
-            heatmap: result.heatmapPath,
-            pdfText: result.reportFindings // Fallback compatibility
-        };
+        return { results };
 
     } catch (error) {
         console.error("Analysis Error:", error);

@@ -1,8 +1,0 @@
-{
-  "input_height": 896,
-  "input_width": 896,
-  "num_patches": 256,
-  "grid_size": 16,
-  "projected_dim": 2560,
-  "model_id": "convaiinnovations/medgemma-4b-ecginstruct"
-}

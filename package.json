@@ -54,29 +54,17 @@
       "!dist",
       "!**/*.py",
       "!**/*.ipynb",
-      "!src-tauri/*"
-    ],
-    "extraResources": [
-      {
-        "from": "model",
-        "to": "model",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "onnx_export",
-        "to": "onnx_export",
-        "filter": [
-          "**/*"
-        ]
-      }
+      "!src-tauri/*",
+      "!model/**",
+      "!onnx_export/**"
     ],
     "asar": true,
     "asarUnpack": [
       "**/node_modules/node-llama-cpp/**/*",
       "**/node_modules/onnxruntime-node/**/*",
-      "**/node_modules/better-sqlite3/**/*"
+      "**/node_modules/better-sqlite3/**/*",
+      "vision_worker.mjs",
+      "rag_worker.js"
     ]
   }
 }

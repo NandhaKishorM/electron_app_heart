@@ -28,5 +28,6 @@ contextBridge.exposeInMainWorld("api", {
     clearHistory: () => ipcRenderer.invoke("clear-history"),
     getSettings: () => ipcRenderer.invoke("get-settings"),
     saveSetting: (key, value) => ipcRenderer.invoke("save-setting", { key, value }),
-    getSession: (id) => ipcRenderer.invoke("get-session", id)
+    getSession: (id) => ipcRenderer.invoke("get-session", id),
+    onAnalysisProgress: (callback) => ipcRenderer.on('analysis-progress', (event, value) => callback(value))
 });

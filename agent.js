@@ -4,8 +4,11 @@ import { ChatLlamaCpp } from "@langchain/community/chat_models/llama_cpp";
 import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
 import { getLlama, LlamaChatSession, LlamaJsonSchemaGrammar } from "node-llama-cpp";
 import path from "path";
+import { fileURLToPath } from "url";
 import fs from "fs-extra";
 import { createRequire } from "module";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { Worker } from "worker_threads";
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -23,9 +26,9 @@ const AssessmentSchema = z.object({
     lifestyle_recommendations: z.array(z.string()).min(1).describe("List of at least 3 detailed lifestyle modifications, including specific dietary changes, activity restrictions, and symptom monitoring advice.")
 });
 
-// --- Configuration ---
-const MODEL_PATH = path.join(process.cwd(), "model", "ggml-model-q4_k_m.gguf");
-const MMPROJ_PATH = path.join(process.cwd(), "model", "mmproj-medgemma-4b-ecginstruct-F16.gguf");
+// --- Configuration (set dynamically at init) ---
+let MODEL_PATH = null;
+let MMPROJ_PATH = null;
 
 // --- Model Initialization (Singleton) ---
 let llama = null;
@@ -63,7 +66,13 @@ function runRagTask(type, data = {}) {
     });
 }
 
-export async function initializeAI(onProgress) {
+export async function initializeAI(onProgress, modelsDir) {
+    if (!modelsDir) throw new Error("modelsDir is required for initializeAI");
+
+    // Set model paths from the provided models directory
+    MODEL_PATH = path.join(modelsDir, "ggml-model-q4_k_m.gguf");
+    MMPROJ_PATH = path.join(modelsDir, "mmproj-medgemma-4b-ecginstruct-F16.gguf");
+
     if (onProgress) onProgress("Starting AI Initialization...", 10);
 
     if (!llama) {
@@ -104,15 +113,16 @@ export async function initializeAI(onProgress) {
     if (!visionWorker) {
         console.log("Initializing Vision Worker...");
         // Use the correct worker file
-        visionWorker = new Worker(path.join(process.cwd(), "vision_worker.mjs"));
-        await runVisionTask('init');
+        visionWorker = new Worker(path.join(__dirname, "vision_worker.mjs"));
+        const onnxPath = path.join(modelsDir, "vision_encoder_quant.onnx");
+        await runVisionTask('init', { onnxPath });
         console.log("Vision Worker Ready.");
     }
 
     if (!ragWorker) {
         console.log("Initializing RAG Worker...");
         if (onProgress) onProgress("Loading Embeddings...", 80);
-        ragWorker = new Worker(path.join(process.cwd(), "rag_worker.js"));
+        ragWorker = new Worker(path.join(__dirname, "rag_worker.js"));
         await runRagTask('init'); // Pre-load embeddings in worker
         console.log("RAG Worker Ready.");
     }
@@ -240,48 +250,35 @@ async function synthesisNode(state) {
     const pdfData = state.reportFindings;
     const ecgPath = state.ecgPath; // Get ECG Path
     const lastMessage = state.messages[state.messages.length - 1];
-    const userQuery = lastMessage.content;
+    let userQuery = lastMessage.content;
+
+    // Sanitize the query to prevent filename bias
+    // e.g. "Please analyze this patient case. [ECG: path/to/STEMI.jpg]" -> "Please analyze this patient case. [ECG Image Attached]"
+    userQuery = userQuery.replace(/\[ECG: .*?\]/g, "[ECG Image Attached]");
+    userQuery = userQuery.replace(/\[Report: .*?\]/g, "[Medical Report Attached]");
 
     const context = `
 Clinical Report / Patient History (Context):
 ${pdfData}
     `.trim();
 
-    // Orchestrator Prompt - Structured Text
-    const prompt = `Case: ${userQuery}
-    
-Data:
-${context}
+    // Use the EXACT prompt the model was fine-tuned on for best results
+    let prompt = "<image>\nReview the ECG signal image and produce a detailed report on your diagnostic observations, ending with the final diagnosis.";
 
-Task: You are an expert cardiologist. Analyze the attached ECG image and the provided clinical report.
-Format your response exactly with these headers:
+    // If PDF report data exists, append it to the end of the prompt safely
+    if (pdfData && pdfData !== "No Medical Report provided.") {
+        prompt += `\n\n[Clinical Context from Provided Medical Report]:\n${pdfData}`;
+    }
 
-### ECG ANALYSIS
-(Describe the ECG findings from the image. Mention rhythm, rate, intervals, axis, and ST-T changes.)
-
-### ASSESSMENT
-(Write a detailed clinical assessment, connecting your ECG observations with the Report findings.)
-
-### NEXT STEPS
-(List 3-5 specific next steps. One per line, starting with "- ")
-
-### LIFESTYLE
-(List 3-5 lifestyle recommendations. One per line, starting with "- ")
-
-CRITICAL RULES:
-1. LOOK AT THE IMAGE: The ECG data is in the image file, not the text.
-2. BE CONCISE: Do not repeat yourself.
-3. FOLLOW FORMAT: Use the headers exactly.
-`;
-
-    console.log("Generatng Structured Assessment (Text)...");
+    console.log("Generating Assessment using Fine-Tuned Prompt...");
 
     try {
         // Speculative Multimodal Prompting
         // We attempt to pass the image via options if supported
         const promptOptions = {
-            maxTokens: 3072,
+            maxTokens: 1024,
             temperature: 0.1,
+            topP: 0.9,
             repeatPenalty: 1.2
         };
 
@@ -301,35 +298,43 @@ CRITICAL RULES:
         let lifestyle = [];
 
         try {
-            // Extract Sections using Regex
-            const ecgAnalysisMatch = response.match(/### ECG ANALYSIS([\s\S]*?)(?=###|$)/i);
-            const assessmentMatch = response.match(/### ASSESSMENT([\s\S]*?)(?=###|$)/i);
-            const nextStepsMatch = response.match(/### NEXT STEPS([\s\S]*?)(?=###|$)/i);
-            const lifestyleMatch = response.match(/### LIFESTYLE([\s\S]*?)(?=###|$)/i);
+            // Since we reverted to the strict training prompt, the model will output a narrative report
+            // rather than strictly formatted headers. We use the full output as the primary assessment.
+            assessment = response.trim();
 
-            let ecgFindings = "No specific ECG analysis generated.";
-            if (ecgAnalysisMatch) ecgFindings = ecgAnalysisMatch[1].trim();
-            if (assessmentMatch) assessment = assessmentMatch[1].trim();
+            // Try to loosely extract "Next Steps" or "Recommendations" if the model happened to list them.
+            // If not, we just present the raw report.
+            const sentences = assessment.split(/(?<=\.)\s+/);
 
-            if (nextStepsMatch) {
-                nextSteps = nextStepsMatch[1].trim().split('\n')
-                    .map(line => line.replace(/^-\s*/, '').trim())
-                    .filter(line => line.length > 0);
+            let currentSection = "assessment";
+            let assessmentText = [];
+
+            for (const sentence of sentences) {
+                const lower = sentence.toLowerCase();
+                if (lower.includes("recommend") || lower.includes("next step") || lower.includes("further evaluation") || lower.includes("referral")) {
+                    currentSection = "nextSteps";
+                }
+
+                if (currentSection === "assessment") {
+                    assessmentText.push(sentence);
+                } else {
+                    // Very rudimentary sorting
+                    if (lower.includes("diet") || lower.includes("smoke") || lower.includes("exercise") || lower.includes("lifestyle")) {
+                        lifestyle.push("• " + sentence);
+                    } else {
+                        nextSteps.push("• " + sentence);
+                    }
+                }
             }
 
-            if (lifestyleMatch) {
-                lifestyle = lifestyleMatch[1].trim().split('\n')
-                    .map(line => line.replace(/^-\s*/, '').trim())
-                    .filter(line => line.length > 0);
-            }
+            // We use the full text as the ECG findings / Assessment to not lose data
+            let combinedAssessment = assessment;
 
-            // Update state with LLM-generated ECG findings
-            // Note: We are overriding the worker's (now empty) ecgFindings with the LLM's.
             return {
-                ecgFindings: ecgFindings,
-                clinicalAssessment: assessment,
-                nextSteps: nextSteps,
-                lifestyleRecommendations: lifestyle,
+                ecgFindings: combinedAssessment,
+                clinicalAssessment: combinedAssessment,
+                nextSteps: nextSteps.length > 0 ? nextSteps : ["Please review the assessment above for specific steps."],
+                lifestyleRecommendations: lifestyle.length > 0 ? lifestyle : ["Maintain heart-healthy habits; consult physician for specifics."],
                 messages: [new AIMessage({ content: "Analysis Complete" })]
             };
 

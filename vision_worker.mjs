@@ -4,7 +4,7 @@ import { Jimp } from 'jimp';
 import path from 'path';
 import fs from 'fs-extra';
 
-const ONNX_PATH = path.join(process.cwd(), "onnx_export", "vision_encoder_quant.onnx");
+let ONNX_PATH = null;
 let visionSession = null;
 
 // --- Helper: Jet Colormap ---
@@ -170,6 +170,8 @@ parentPort.on('message', async (msg) => {
     if (msg.type === 'init') {
         try {
             outputDir = msg.outputDir; // Receive Output Dir
+            if (msg.onnxPath) ONNX_PATH = msg.onnxPath; // Receive ONNX path from main thread
+            if (!ONNX_PATH) throw new Error("ONNX path not provided");
             if (!visionSession) {
                 visionSession = await onnx.InferenceSession.create(ONNX_PATH);
             }

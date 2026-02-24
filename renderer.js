@@ -4,6 +4,8 @@ const { getSessions, getMessages, createSession, sendMessage } = window.api;
 // State
 let selectedECGs = [];
 let selectedPDFs = [];
+let analysisResults = []; // per-ECG results array
+let activeEcgIndex = 0;
 
 // DOM Elements
 const homeTab = document.getElementById('home-tab');
@@ -11,163 +13,142 @@ const resultsView = document.getElementById('results-view');
 const loaderOverlay = document.getElementById('loader-overlay');
 const analyzeBtn = document.getElementById('analyze-btn');
 const backToHomeBtn = document.getElementById('back-to-home');
+const analysisProgressDetail = document.getElementById('analysis-progress-detail');
 
 // Upload Elements
 const ecgDropZone = document.getElementById('ecg-drop-zone');
 const ecgInput = document.getElementById('ecg-input');
-const ecgStatus = document.getElementById('ecg-status');
+const ecgChips = document.getElementById('ecg-chips');
 
 const pdfDropZone = document.getElementById('pdf-drop-zone');
 const pdfInput = document.getElementById('pdf-input');
-const pdfStatus = document.getElementById('pdf-status');
+const pdfChips = document.getElementById('pdf-chips');
 
 // Result Elements
 const resultTabs = document.querySelectorAll('.result-tab');
 const resultPanels = document.querySelectorAll('.result-panel');
-const combinedSummary = document.getElementById('analysis-summary');
-const pdfExtractedText = document.getElementById('pdf-extracted-text');
 const ecgPreviewImg = document.getElementById('ecg-preview-img');
 const heatmapImg = document.getElementById('heatmap-img');
+
+// --- File Chip Helpers ---
+
+function createFileChip(fileName, filePath, type, index) {
+    const chip = document.createElement('div');
+    chip.className = 'file-chip';
+    chip.dataset.index = index;
+    chip.dataset.type = type;
+
+    if (type === 'ecg') {
+        const thumb = document.createElement('img');
+        thumb.className = 'file-chip-thumbnail';
+        thumb.src = `file://${filePath}`;
+        thumb.alt = fileName;
+        chip.appendChild(thumb);
+    } else {
+        const icon = document.createElement('div');
+        icon.className = 'file-chip-icon';
+        icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>';
+        chip.appendChild(icon);
+    }
+
+    const name = document.createElement('span');
+    name.className = 'file-chip-name';
+    name.textContent = fileName;
+    name.title = filePath;
+    chip.appendChild(name);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'file-chip-remove';
+    removeBtn.innerHTML = '×';
+    removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        chip.classList.add('removing');
+        setTimeout(() => {
+            if (type === 'ecg') {
+                selectedECGs = selectedECGs.filter(p => p !== filePath);
+                renderChips('ecg');
+            } else {
+                selectedPDFs = selectedPDFs.filter(p => p !== filePath);
+                renderChips('pdf');
+            }
+            updateAnalyzeButton();
+        }, 200);
+    });
+    chip.appendChild(removeBtn);
+
+    return chip;
+}
+
+function renderChips(type) {
+    const container = type === 'ecg' ? ecgChips : pdfChips;
+    const files = type === 'ecg' ? selectedECGs : selectedPDFs;
+    container.innerHTML = '';
+    files.forEach((filePath, i) => {
+        const fileName = filePath.split(/[/\\]/).pop();
+        container.appendChild(createFileChip(fileName, filePath, type, i));
+    });
+}
 
 // --- Drag & Drop Handlers ---
 
 function setupDragDrop(zone, input, type) {
-    console.log(`Setting up Drag & Drop for ${type}`);
-    zone.addEventListener('click', () => {
-        console.log(`Click detected on ${type} zone`);
-        input.click();
-    });
+    zone.addEventListener('click', () => input.click());
 
     zone.addEventListener('dragover', (e) => {
         e.preventDefault();
         zone.classList.add('drag-active');
-        zone.style.background = 'rgba(59, 130, 246, 0.1)';
-        zone.style.borderColor = 'var(--accent)';
     });
 
     zone.addEventListener('dragleave', (e) => {
         e.preventDefault();
         zone.classList.remove('drag-active');
-        zone.style.background = '';
-        zone.style.borderColor = '';
     });
 
     zone.addEventListener('drop', (e) => {
         e.preventDefault();
         zone.classList.remove('drag-active');
-        zone.style.background = '';
-        zone.style.borderColor = '';
-
-        if (e.dataTransfer.files.length) {
-            handleFileSelection(e.dataTransfer.files, type);
-        }
+        if (e.dataTransfer.files.length) handleFileSelection(e.dataTransfer.files, type);
     });
 
     input.addEventListener('change', (e) => {
-        if (e.target.files.length) {
-            handleFileSelection(e.target.files, type);
-        }
+        if (e.target.files.length) handleFileSelection(e.target.files, type);
     });
 }
-
-
-// State Helper
-function getSelectedFiles() {
-    return { ecg: selectedECGs, pdf: selectedPDFs };
-}
-
-// ...
 
 function resetAnalysis() {
     selectedECGs = [];
     selectedPDFs = [];
-    ecgStatus.innerHTML = '';
-    ecgStatus.classList.add('hidden');
-    pdfStatus.innerHTML = '';
-    pdfStatus.classList.add('hidden');
-
+    analysisResults = [];
+    activeEcgIndex = 0;
+    ecgChips.innerHTML = '';
+    pdfChips.innerHTML = '';
     ecgPreviewImg.src = '';
     ecgPreviewImg.style.display = 'none';
-
+    if (heatmapImg) heatmapImg.src = '';
+    ecgInput.value = '';
+    pdfInput.value = '';
     updateAnalyzeButton();
 }
 
-// Updated File Selection Logic
 function handleFileSelection(files, type) {
     if (!files || files.length === 0) return;
 
-    // files is a FileList or array of files
     Array.from(files).forEach(file => {
         const filePath = window.api.getFilePath(file);
-        console.log(`File selected [${type}]:`, file.name, "Path:", filePath);
-
         if (type === 'ecg') {
-            // Prevent duplicates
-            if (!selectedECGs.includes(filePath)) {
-                selectedECGs.push(filePath);
-            }
+            if (!selectedECGs.includes(filePath)) selectedECGs.push(filePath);
         } else {
-            if (!selectedPDFs.includes(filePath)) {
-                selectedPDFs.push(filePath);
-            }
+            if (!selectedPDFs.includes(filePath)) selectedPDFs.push(filePath);
         }
     });
 
-    if (type === 'ecg') {
-        updateFileList(ecgStatus, selectedECGs, 'ecg');
-        // Preview the *first* newly added one or last? Let's just update preview to last added
-        if (selectedECGs.length > 0) {
-            ecgPreviewImg.src = `file://${selectedECGs[selectedECGs.length - 1]}`;
-            ecgPreviewImg.style.display = 'block';
-        }
-    } else {
-        updateFileList(pdfStatus, selectedPDFs, 'pdf');
-    }
-
+    renderChips(type);
     updateAnalyzeButton();
 }
-
-// Updated List with Remove Icon
-function updateFileList(element, files, type) {
-    if (files.length === 0) {
-        element.innerHTML = '';
-        element.classList.add('hidden');
-        return;
-    }
-    element.classList.remove('hidden');
-    element.innerHTML = files.map((f, index) => `
-        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--bg-secondary); padding:4px 8px; border-radius:4px; margin-bottom:4px; font-size:0.9rem;">
-            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:80%;" title="${f}">${f.split(/[/\\]/).pop()}</span>
-            <button onclick="removeFile('${type}', ${index})" style="background:none; border:none; color:var(--text-secondary); cursor:pointer; font-size:1.1rem; line-height:1;">&times;</button>
-        </div>
-    `).join('');
-}
-
-// Global Remove Function (needs to be attached to window to work with inline onclick string)
-window.removeFile = (type, index) => {
-    if (type === 'ecg') {
-        selectedECGs.splice(index, 1);
-        updateFileList(ecgStatus, selectedECGs, 'ecg');
-        if (selectedECGs.length === 0) {
-            ecgPreviewImg.src = '';
-            ecgPreviewImg.style.display = 'none';
-        }
-    } else {
-        selectedPDFs.splice(index, 1);
-        updateFileList(pdfStatus, selectedPDFs, 'pdf');
-    }
-    updateAnalyzeButton();
-};
 
 function updateAnalyzeButton() {
-    console.log("Updating Button State. ECGs:", selectedECGs.length, "PDFs:", selectedPDFs.length);
-    if (selectedECGs.length > 0 || selectedPDFs.length > 0) {
-        analyzeBtn.removeAttribute('disabled');
-        analyzeBtn.disabled = false;
-    } else {
-        analyzeBtn.setAttribute('disabled', 'true');
-        analyzeBtn.disabled = true;
-    }
+    const hasFiles = selectedECGs.length > 0 || selectedPDFs.length > 0;
+    analyzeBtn.disabled = !hasFiles;
 }
 
 setupDragDrop(ecgDropZone, ecgInput, 'ecg');
@@ -186,7 +167,21 @@ window.api.onAIStatus((data) => {
     const message = (typeof data === 'object') ? data.message : null;
     const percent = (typeof data === 'object') ? data.percent : 0;
 
-    if (status === 'loading') {
+    if (status === 'downloading') {
+        if (startupLoader) startupLoader.classList.remove('hidden');
+        if (startupText) {
+            const fileName = data.fileName || 'model';
+            const dlMB = data.downloadedMB || '0';
+            const totalMB = data.totalMB || '?';
+            const fileIdx = data.fileIndex || 1;
+            const totalFiles = data.totalFiles || 3;
+            startupText.textContent = `Downloading ${fileName} (${fileIdx}/${totalFiles})... ${dlMB} MB / ${totalMB} MB (${data.downloadPercent || 0}%)`;
+            startupText.style.color = 'var(--accent)';
+        }
+        if (startupProgressBar) {
+            startupProgressBar.style.width = `${percent}%`;
+        }
+    } else if (status === 'loading') {
         if (startupLoader) startupLoader.classList.remove('hidden');
         if (startupText) {
             startupText.textContent = `${message || 'Initializing...'} (${percent}%)`;
@@ -212,83 +207,119 @@ window.api.onAIStatus((data) => {
     }
 });
 
+// --- Analysis Progress Listener ---
+window.api.onAnalysisProgress((data) => {
+    if (analysisProgressDetail) {
+        analysisProgressDetail.textContent = `Analyzing ECG ${data.current}/${data.total}: ${data.fileName}`;
+    }
+});
+
+// --- Per-ECG Result Display ---
+function showEcgResult(index) {
+    if (!analysisResults || index >= analysisResults.length) return;
+    activeEcgIndex = index;
+    const r = analysisResults[index];
+
+    const formatList = (data) => {
+        if (Array.isArray(data)) return data.map(item => `- ${item}`).join('\n');
+        return data || "Information not provided.";
+    };
+
+    // Populate per-ECG fields
+    document.getElementById('analysis-summary').innerHTML = window.api.parseMarkdown(r.clinical_assessment || 'N/A');
+    document.getElementById('ecg-analysis-content').innerHTML = window.api.parseMarkdown(r.ecg_findings || 'N/A');
+    document.getElementById('report-analysis-content').innerHTML = window.api.parseMarkdown(r.report_findings || 'N/A');
+    document.getElementById('next-steps-content').innerHTML = window.api.parseMarkdown(formatList(r.next_steps));
+    document.getElementById('lifestyle-content').innerHTML = window.api.parseMarkdown(formatList(r.lifestyle_recommendations));
+
+    // ECG Preview
+    if (r.ecgPath) {
+        ecgPreviewImg.src = `file://${r.ecgPath}`;
+        ecgPreviewImg.style.display = 'block';
+    } else {
+        ecgPreviewImg.style.display = 'none';
+    }
+
+    // Heatmap
+    const heatmapTabBtn = document.querySelector('button[data-target="heatmap-panel"]');
+    if (r.heatmap) {
+        heatmapImg.src = `file://${r.heatmap}`;
+        if (heatmapTabBtn) heatmapTabBtn.style.display = 'inline-block';
+    } else {
+        if (heatmapTabBtn) heatmapTabBtn.style.display = 'none';
+    }
+
+    // Update ECG selector pills active state
+    document.querySelectorAll('.ecg-selector-pill').forEach((pill, i) => {
+        pill.classList.toggle('active', i === index);
+    });
+}
+
+function buildEcgSelectorBar(results) {
+    const bar = document.getElementById('ecg-selector-bar');
+    bar.innerHTML = '';
+
+    if (results.length <= 1) {
+        bar.style.display = 'none';
+        return;
+    }
+
+    bar.style.display = 'flex';
+    results.forEach((r, i) => {
+        const pill = document.createElement('button');
+        pill.className = 'ecg-selector-pill' + (i === 0 ? ' active' : '');
+
+        if (r.ecgPath) {
+            const thumb = document.createElement('img');
+            thumb.className = 'ecg-selector-pill-thumb';
+            thumb.src = `file://${r.ecgPath}`;
+            pill.appendChild(thumb);
+        }
+
+        const label = document.createElement('span');
+        label.textContent = r.ecgFileName || `ECG ${i + 1}`;
+        pill.appendChild(label);
+
+        pill.addEventListener('click', () => showEcgResult(i));
+        bar.appendChild(pill);
+    });
+}
+
 // --- Analysis Logic ---
 
 analyzeBtn.addEventListener('click', async () => {
     loaderOverlay.classList.remove('hidden');
+    if (analysisProgressDetail) analysisProgressDetail.textContent = 'Preparing analysis...';
 
     try {
-        // 1. Create Session
         const sessionId = await createSession(`Analysis ${new Date().toLocaleTimeString()}`);
 
-        // 2. Real IPC Call
-        // 2. Real IPC Call
-        // Pass arrays now + sessionId for saving
-        const result = await window.api.analyzeCase({
+        const response = await window.api.analyzeCase({
             ecgPaths: selectedECGs,
             pdfPaths: selectedPDFs,
             sessionId: sessionId
         });
 
-        // 3. Populate Results
-        console.log("DEBUG: Graph Result:", result);
+        analysisResults = response.results || [];
+        console.log("DEBUG: Per-ECG Results:", analysisResults);
 
-        const formatList = (data) => {
-            if (Array.isArray(data)) return data.map(item => `- ${item}`).join('\n');
-            return data || "Information not provided.";
-        };
+        // Build ECG selector if multiple ECGs
+        buildEcgSelectorBar(analysisResults);
 
-        const assessment = result.clinical_assessment || "Information not provided.";
-        const nextSteps = formatList(result.next_steps);
-        const lifestyle = formatList(result.lifestyle_recommendations);
-        const ecgFindings = result.ecg_findings || "Information not provided.";
-        const reportFindings = result.report_findings || "Information not provided.";
-
-        // Populate Tabs
-        document.getElementById('analysis-summary').innerHTML = window.api.parseMarkdown(assessment);
-        document.getElementById('next-steps-content').innerHTML = window.api.parseMarkdown(nextSteps);
-        document.getElementById('lifestyle-content').innerHTML = window.api.parseMarkdown(lifestyle);
-        document.getElementById('ecg-analysis-content').innerHTML = window.api.parseMarkdown(ecgFindings);
-        document.getElementById('report-analysis-content').innerHTML = window.api.parseMarkdown(reportFindings);
-
-        // Handle ECG/Heatmap
-        // Handle ECG/Heatmap
-        const selectedHeatmap = result.heatmap || (result.ecg_findings ? null : "");
-
-        if (selectedECGs.length > 0) {
-            ecgPreviewImg.src = `file://${selectedECGs[0]}`;
-            ecgPreviewImg.style.display = 'block';
-
-            // Heatmap extraction from state
-            const finalHeatmap = result.heatmap;
-            const heatmapTabBtn = document.querySelector('button[data-target="heatmap-panel"]');
-
-            if (finalHeatmap) {
-                heatmapImg.src = `file://${finalHeatmap}`;
-                if (heatmapTabBtn) heatmapTabBtn.style.display = 'inline-block';
-            } else {
-                if (heatmapTabBtn) heatmapTabBtn.style.display = 'none';
-            }
+        // Show report data
+        const pdfExtractedText = document.getElementById('pdf-extracted-text');
+        if (analysisResults.length > 0 && analysisResults[0].report_findings) {
+            pdfExtractedText.innerText = analysisResults[0].report_findings;
         } else {
-            ecgPreviewImg.style.display = 'none';
-            const heatmapTabBtn = document.querySelector('button[data-target="heatmap-panel"]');
-            if (heatmapTabBtn) heatmapTabBtn.style.display = 'none';
+            pdfExtractedText.innerText = selectedPDFs.length > 0 ? 'See Report Analysis tab.' : 'No Report Uploaded.';
         }
 
-        // Handle PDF Text (Report Data Tab)
-        if (selectedPDFs.length > 0) {
-            pdfExtractedText.innerText = result.pdfText || "Extracted text unavailable.";
-            document.querySelector('[data-target="history-panel"]').style.display = 'block';
-        } else {
-            pdfExtractedText.innerText = "No Report Uploaded.";
-            document.querySelector('[data-target="history-panel"]').style.display = 'block';
-        }
+        // Display first ECG result
+        if (analysisResults.length > 0) showEcgResult(0);
 
-        // 4. Switch View
+        // Switch View
         homeTab.classList.remove('active');
         resultsView.classList.add('active');
-
-        // Default to Assessment tab
         document.querySelector('[data-target="combined-panel"]').click();
 
     } catch (err) {
@@ -296,6 +327,7 @@ analyzeBtn.addEventListener('click', async () => {
         alert("Analysis Error: " + err.message);
     } finally {
         loaderOverlay.classList.add('hidden');
+        if (analysisProgressDetail) analysisProgressDetail.textContent = '';
     }
 });
 
@@ -494,11 +526,9 @@ async function loadHistory() {
 // Extracted Session Loader for clarity
 async function loadSessionDetails(sessionId) {
     try {
-        const result = await window.api.getSession(sessionId); // Assuming getSession returns the full session object
+        const result = await window.api.getSession(sessionId);
         const messages = result.messages;
-        // ... (Same logic as before for populating UI) ...
-        // Re-using logic from previous implementation
-        // Find the analysis message (either old format or new JSON format)
+
         const analysisMsg = messages.reverse().find(m =>
             m.role === 'assistant' && (
                 m.content.includes('## Clinical Assessment') ||
@@ -507,8 +537,6 @@ async function loadSessionDetails(sessionId) {
         );
 
         if (!analysisMsg) {
-            console.warn("No specific analysis found in this session.");
-            // Fallback: If there's ANY assistant message, try to use it
             const fallbackMsg = messages.find(m => m.role === 'assistant');
             if (!fallbackMsg) {
                 alert("No analysis found in this session.");
@@ -516,10 +544,7 @@ async function loadSessionDetails(sessionId) {
             }
         }
 
-        // 3. Populate Results
         const rawContent = analysisMsg.content;
-        console.log("DEBUG: Raw History Output:", rawContent);
-
         let assessmentData = {};
 
         try {
@@ -527,8 +552,6 @@ async function loadSessionDetails(sessionId) {
             const cleanJson = jsonPart.replace(/^```json/, '').replace(/^```/, '').replace(/```$/, '').trim();
             assessmentData = JSON.parse(cleanJson);
         } catch (e) {
-            console.error("History JSON Parsing Failed:", e);
-            // Fallback: If it's old legacy plain text or regex-formatted text
             assessmentData = {
                 clinical_assessment: rawContent,
                 ecg_findings: "Legacy format - see combined assessment.",
@@ -538,57 +561,32 @@ async function loadSessionDetails(sessionId) {
             };
         }
 
-        const formatList = (data) => {
-            if (Array.isArray(data)) return data.map(item => `- ${item}`).join('\n');
-            return data || "Information not provided.";
-        };
+        // Handle new multi-result format
+        if (assessmentData.results && Array.isArray(assessmentData.results)) {
+            analysisResults = assessmentData.results;
+            buildEcgSelectorBar(analysisResults);
+            if (analysisResults.length > 0) showEcgResult(0);
+        } else {
+            // Legacy single-result format
+            analysisResults = [assessmentData];
+            buildEcgSelectorBar(analysisResults);
+            showEcgResult(0);
+        }
 
-        const assessment = assessmentData.clinical_assessment || "Information not provided.";
-        const nextSteps = formatList(assessmentData.next_steps);
-        const lifestyle = formatList(assessmentData.lifestyle_recommendations);
-        const ecgFindings = assessmentData.ecg_findings || "No specific ECG findings.";
-        const reportFindings = assessmentData.report_findings || "No report data.";
-
-        // Populate Tabs
-        document.getElementById('analysis-summary').innerHTML = window.api.parseMarkdown(assessment);
-        document.getElementById('next-steps-content').innerHTML = window.api.parseMarkdown(nextSteps);
-        document.getElementById('lifestyle-content').innerHTML = window.api.parseMarkdown(lifestyle);
-        document.getElementById('ecg-analysis-content').innerHTML = window.api.parseMarkdown(ecgFindings);
-        document.getElementById('report-analysis-content').innerHTML = window.api.parseMarkdown(reportFindings);
-
+        // Set ECG preview from user message if available
         const userMsg = messages.find(m => m.role === 'user' && m.image_path);
-        const heatmapMatch = rawContent.match(/\[HEATMAP_PATH: (.*?)\]/);
-        const heatmapPath = heatmapMatch ? heatmapMatch[1] : (assessmentData.heatmap || null);
-
-        if (userMsg && userMsg.image_path) {
+        if (userMsg && userMsg.image_path && (!analysisResults[0] || !analysisResults[0].ecgPath)) {
             ecgPreviewImg.src = `file://${userMsg.image_path}`;
             ecgPreviewImg.style.display = 'block';
-
-            if (heatmapPath) {
-                heatmapImg.src = `file://${heatmapPath}`;
-                const heatmapTabBtn = document.querySelector('button[data-target="heatmap-panel"]');
-                if (heatmapTabBtn) heatmapTabBtn.style.display = 'inline-block';
-            } else {
-                const heatmapTabBtn = document.querySelector('button[data-target="heatmap-panel"]');
-                if (heatmapTabBtn) heatmapTabBtn.style.display = 'none';
-            }
         }
 
-        // 1. Set ECG Preview (Original Image)
-        if (userMsg && userMsg.image_path) {
-            document.getElementById('ecg-preview-img').src = `file://${userMsg.image_path}`;
-            document.getElementById('ecg-preview-img').style.display = 'block';
-        } else {
-            // Fallback if no user image found (rare)
-            document.getElementById('ecg-preview-img').style.display = 'none';
-        }
-
-        // 2. Set Heatmap Image
-        if (heatmapPath) {
-            document.getElementById('heatmap-img').src = `file://${heatmapPath}`;
-            document.querySelector('[data-target="heatmap-panel"]').style.display = 'block';
-        } else {
-            document.querySelector('[data-target="heatmap-panel"]').style.display = 'none';
+        // Heatmap from legacy format
+        const heatmapMatch = rawContent.match(/\[HEATMAP_PATH: (.*?)\]/);
+        const heatmapPath = heatmapMatch ? heatmapMatch[1] : (assessmentData.heatmap || null);
+        if (heatmapPath && analysisResults[0] && !analysisResults[0].heatmap) {
+            heatmapImg.src = `file://${heatmapPath}`;
+            const heatmapTabBtn = document.querySelector('button[data-target="heatmap-panel"]');
+            if (heatmapTabBtn) heatmapTabBtn.style.display = 'inline-block';
         }
 
         document.querySelectorAll('.nav-links li').forEach(l => l.classList.remove('active'));
@@ -617,6 +615,91 @@ if (clearHistoryBtn) {
     });
 }
 
+
+// --- Image Lightbox ---
+const lightbox = document.getElementById('image-lightbox');
+const lightboxImg = document.getElementById('lightbox-img');
+const lightboxWrapper = document.getElementById('lightbox-image-wrapper');
+let lbZoom = 1;
+let lbPanX = 0, lbPanY = 0;
+
+function applyLightboxTransform() {
+    lightboxImg.style.transform = `translate(${lbPanX}px, ${lbPanY}px) scale(${lbZoom})`;
+}
+
+function openLightbox(src) {
+    if (!src) return;
+    lightboxImg.src = src;
+    lbZoom = 1;
+    lbPanX = 0;
+    lbPanY = 0;
+    applyLightboxTransform();
+    lightbox.style.display = 'flex';
+}
+
+function closeLightbox() {
+    lightbox.style.display = 'none';
+    lightboxImg.src = '';
+    lbZoom = 1;
+    lbPanX = 0;
+    lbPanY = 0;
+}
+
+document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+document.getElementById('lightbox-zoom-in').addEventListener('click', () => {
+    lbZoom = Math.min(lbZoom + 0.25, 5);
+    applyLightboxTransform();
+});
+document.getElementById('lightbox-zoom-out').addEventListener('click', () => {
+    lbZoom = Math.max(lbZoom - 0.25, 0.25);
+    applyLightboxTransform();
+});
+document.getElementById('lightbox-fit').addEventListener('click', () => {
+    lbZoom = 1;
+    lbPanX = 0;
+    lbPanY = 0;
+    applyLightboxTransform();
+});
+
+// Mouse wheel zoom
+lightboxWrapper.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 0.15 : -0.15;
+    lbZoom = Math.max(0.25, Math.min(5, lbZoom + delta));
+    applyLightboxTransform();
+});
+
+// Click outside window (backdrop) to close
+lightbox.addEventListener('click', (e) => {
+    if (e.target === lightbox) closeLightbox();
+});
+
+// Escape to close
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && lightbox.style.display === 'flex') closeLightbox();
+});
+
+// Drag to pan
+let lbDragging = false, lbDragStartX, lbDragStartY, lbPanStartX, lbPanStartY;
+lightboxWrapper.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    lbDragging = true;
+    lbDragStartX = e.clientX;
+    lbDragStartY = e.clientY;
+    lbPanStartX = lbPanX;
+    lbPanStartY = lbPanY;
+});
+document.addEventListener('mousemove', (e) => {
+    if (!lbDragging) return;
+    lbPanX = lbPanStartX + (e.clientX - lbDragStartX);
+    lbPanY = lbPanStartY + (e.clientY - lbDragStartY);
+    applyLightboxTransform();
+});
+document.addEventListener('mouseup', () => { lbDragging = false; });
+
+// Make ECG preview and heatmap clickable
+ecgPreviewImg.addEventListener('click', () => openLightbox(ecgPreviewImg.src));
+heatmapImg.addEventListener('click', () => openLightbox(heatmapImg.src));
 
 // --- Settings Logic ---
 const userNameInput = document.getElementById('user-name');
