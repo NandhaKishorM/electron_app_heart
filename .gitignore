@@ -49,3 +49,5 @@ yarn-error.log*
 
 # Models
 ggml-model-q4_k_m.gguf
+hf_space
+upload_to_hf.py
