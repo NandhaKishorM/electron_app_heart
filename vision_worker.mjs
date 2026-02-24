@@ -128,19 +128,18 @@ async function generateHeatmapOverlay(imagePath, outputMap) {
 
             // Invert logic (Crucial: Model output needs to be inverted)
             // Grid (1.0) -> 0.0 (Transparent)
-            // Signal (0.0) -> 1.0 (Red)
+            // Signal (0.0) -> 1.0 (High Attention)
             val = 1.0 - val;
 
-            const rgb = colorMapJet(val);
+            // Invert the colormap as requested: Red becomes Blue, Blue becomes Red
+            // High attention (val = 1.0) will use colorMapJet(0.0) = BLUE
+            const rgb = colorMapJet(1.0 - val);
 
-            // Alpha logic to match "Overlay" appearance
-            // In Python script it blends with alpha=0.5. 
-            // Here we set pixel alpha. 
-            // We'll keep low values transparent to avoid "Blue Background"
+            // Alpha logic to hide the background properly but keep signals vibrant
             let alpha = 0;
-            if (val > 0) {
-                // 0.5 opacity = ~128
-                alpha = 140;
+            if (val > 0.2) {
+                // Boost opacity significantly for visualization
+                alpha = Math.floor(100 + val * 155);
             }
 
             // Optional: smooth alpha transition at edges

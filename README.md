@@ -2,6 +2,11 @@
 
 Offline Desktop App for Multimodal ECG & Report Analysis.
 
+🚀 **[Download AI4Cardio Windows App (.exe) Here](https://storage.googleapis.com/courseai/AI4Cardio-Electron%20Setup%201.0.0.exe)**
+
+![AI4Cardio Analysis Interface](assets/images/app_screenshot_1.png)
+![AI4Cardio Heatmap Visualization](assets/images/app_screenshot_2.png)
+
 ## Prerequisites
 
 - **Node.js**: v18 or higher
