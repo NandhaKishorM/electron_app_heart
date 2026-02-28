@@ -222,7 +222,15 @@ async function synthesisNode(state) {
             console.log(`Image encoded: ${(base64Image.length / 1024).toFixed(1)} KB base64`);
 
             // Build multimodal content array for /v1/chat/completions
-            let textPrompt = "You are a cardiologist analyzing an ECG. Review the ECG image and produce a single, concise clinical report. Include: Rhythm Analysis, Rate Assessment, Interval Measurements, Axis Evaluation, ST-T Wave Changes, and Final Diagnosis.";
+            let textPrompt = `You are an expert cardiologist analyzing a 12-lead ECG image. Produce a concise, accurate clinical report with these sections:
+1. Rhythm Analysis
+2. Rate Assessment  
+3. Interval Measurements (PR, QRS, QT)
+4. Axis Evaluation
+5. ST-T Wave Changes
+6. Final Diagnosis
+
+IMPORTANT: Only report abnormalities you can clearly identify in the image. If the ECG appears normal, state 'Normal sinus rhythm' and note the absence of pathology. Do not speculate about conditions not visible in the tracing.`;
 
             if (pdfData && pdfData !== "No Medical Report provided.") {
                 textPrompt += `\n\nClinical Context from Medical Report:\n${pdfData}`;
@@ -245,7 +253,7 @@ async function synthesisNode(state) {
             console.log("Sending multimodal request to llama-server...");
             response = await chatCompletion(messages, {
                 maxTokens: 1024,
-                temperature: 0.7,
+                temperature: 0.2,
                 topP: 0.9,
                 repeatPenalty: 1.3
             });
