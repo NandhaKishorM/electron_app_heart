@@ -162,6 +162,197 @@ async function generateHeatmapOverlay(imagePath, outputMap) {
     return outputPath;
 }
 
+// --- Vision Feature Extraction ---
+function extractVisionDescription(outputMap) {
+    const keys = Object.keys(outputMap);
+    console.log(`[Worker] ONNX output keys: ${keys.join(', ')}`);
+    keys.forEach(key => {
+        const t = outputMap[key];
+        console.log(`[Worker]   ${key}: dims=${JSON.stringify(t.dims)}, type=${t.type}`);
+    });
+
+    // --- Identify tensors by name or fallback by shape ---
+    let embeddingsTensor = null; // projected_embeddings [1, N, D]
+    let attentionTensor = null;  // attention_scores [1, N]
+    let pooledTensor = null;     // pooled_embedding [1, D]
+
+    for (const key of keys) {
+        const t = outputMap[key];
+        if (key.includes('projected') || key.includes('embedding')) {
+            if (t.dims.length === 3) embeddingsTensor = t;
+            else if (t.dims.length === 2 && !key.includes('attention')) pooledTensor = t;
+        }
+        if (key.includes('attention') || key.includes('att')) {
+            attentionTensor = t;
+        }
+        if (key.includes('pooled')) {
+            pooledTensor = t;
+        }
+    }
+
+    // Fallback assignment by index if names didn't match
+    if (!embeddingsTensor && keys.length >= 1) {
+        const t = outputMap[keys[0]];
+        if (t.dims.length === 3) embeddingsTensor = t;
+    }
+    if (!attentionTensor && keys.length >= 2) attentionTensor = outputMap[keys[1]];
+    if (!pooledTensor && keys.length >= 3) pooledTensor = outputMap[keys[2]];
+
+    const sections = [];
+
+    // --- 1. Pooled Embedding Analysis (Global Image Summary) ---
+    if (pooledTensor) {
+        const data = pooledTensor.data;
+        let sum = 0, sumSq = 0, min = Infinity, max = -Infinity;
+        let posCount = 0, negCount = 0;
+        for (let i = 0; i < data.length; i++) {
+            sum += data[i];
+            sumSq += data[i] * data[i];
+            if (data[i] < min) min = data[i];
+            if (data[i] > max) max = data[i];
+            if (data[i] > 0) posCount++;
+            else negCount++;
+        }
+        const mean = sum / data.length;
+        const std = Math.sqrt(sumSq / data.length - mean * mean);
+        const energy = Math.sqrt(sumSq);
+        sections.push(`Global Feature Vector: dim=${data.length}, mean=${mean.toFixed(4)}, std=${std.toFixed(4)}, energy=${energy.toFixed(2)}, range=[${min.toFixed(4)}, ${max.toFixed(4)}], positive_ratio=${(posCount / data.length * 100).toFixed(1)}%`);
+    }
+
+    // --- 2. Attention Score Analysis (Where the model focuses) ---
+    if (attentionTensor) {
+        const data = attentionTensor.data;
+        const numPatches = data.length;
+        const gridSize = Math.floor(Math.sqrt(numPatches));
+
+        // Basic stats
+        let sum = 0, min = Infinity, max = -Infinity;
+        for (let i = 0; i < data.length; i++) {
+            sum += data[i];
+            if (data[i] < min) min = data[i];
+            if (data[i] > max) max = data[i];
+        }
+        const meanAtt = sum / data.length;
+
+        // Normalize and find high-attention patches
+        const threshold = meanAtt + (max - meanAtt) * 0.5;
+        const highAttPatches = [];
+        for (let i = 0; i < data.length; i++) {
+            if (data[i] >= threshold) {
+                const row = Math.floor(i / gridSize);
+                const col = i % gridSize;
+                const normalizedVal = (max > min) ? (data[i] - min) / (max - min) : 0;
+                highAttPatches.push({ idx: i, row, col, val: normalizedVal });
+            }
+        }
+        highAttPatches.sort((a, b) => b.val - a.val);
+
+        // Map grid regions to ECG lead approximate positions
+        // In a standard 12-lead ECG printout (4 columns x 3 rows):
+        // Top-left: I, aVR, V1, V4  |  Various lead arrangements
+        function regionLabel(row, col, gridSize) {
+            const rFrac = row / gridSize;
+            const cFrac = col / gridSize;
+            const regions = [];
+            if (rFrac < 0.33) regions.push('upper');
+            else if (rFrac < 0.66) regions.push('middle');
+            else regions.push('lower');
+            if (cFrac < 0.25) regions.push('left(leads-I/aVR)');
+            else if (cFrac < 0.5) regions.push('center-left(leads-II/aVL)');
+            else if (cFrac < 0.75) regions.push('center-right(leads-V1-V3)');
+            else regions.push('right(leads-V4-V6)');
+            return regions.join('-');
+        }
+
+        const topK = highAttPatches.slice(0, 8);
+        const regionCounts = {};
+        for (const p of topK) {
+            const r = regionLabel(p.row, p.col, gridSize);
+            regionCounts[r] = (regionCounts[r] || 0) + 1;
+        }
+
+        const highAttRatio = (highAttPatches.length / numPatches * 100).toFixed(1);
+        sections.push(`Attention Distribution: ${highAttRatio}% of patches show high activation (${highAttPatches.length}/${numPatches} patches above threshold)`);
+
+        if (topK.length > 0) {
+            const regionStr = Object.entries(regionCounts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([region, count]) => `${region}(${count} patches)`)
+                .join(', ');
+            sections.push(`High-Attention Regions: ${regionStr}`);
+
+            const topPatchStr = topK.slice(0, 5)
+                .map(p => `grid[${p.row},${p.col}] intensity=${p.val.toFixed(3)}`)
+                .join('; ');
+            sections.push(`Top Focus Patches: ${topPatchStr}`);
+        }
+
+        // Quadrant energy distribution
+        const quadrants = [0, 0, 0, 0]; // TL, TR, BL, BR
+        for (let i = 0; i < data.length; i++) {
+            const row = Math.floor(i / gridSize);
+            const col = i % gridSize;
+            const qIdx = (row < gridSize / 2 ? 0 : 2) + (col < gridSize / 2 ? 0 : 1);
+            quadrants[qIdx] += (max > min) ? (data[i] - min) / (max - min) : 0;
+        }
+        const qTotal = quadrants.reduce((a, b) => a + b, 0) || 1;
+        sections.push(`Spatial Energy: upper-left=${(quadrants[0] / qTotal * 100).toFixed(1)}%, upper-right=${(quadrants[1] / qTotal * 100).toFixed(1)}%, lower-left=${(quadrants[2] / qTotal * 100).toFixed(1)}%, lower-right=${(quadrants[3] / qTotal * 100).toFixed(1)}%`);
+    }
+
+    // --- 3. Embedding Patch Analysis (Feature richness per region) ---
+    if (embeddingsTensor) {
+        const dims = embeddingsTensor.dims; // [1, N, D]
+        const N = dims[1]; // number of patches
+        const D = dims[2]; // embedding dimension
+        const data = embeddingsTensor.data;
+        const gridSize = Math.floor(Math.sqrt(N));
+
+        // Compute L2 norm per patch
+        const norms = [];
+        for (let p = 0; p < N; p++) {
+            let sumSq = 0;
+            for (let d = 0; d < D; d++) {
+                const val = data[p * D + d];
+                sumSq += val * val;
+            }
+            norms.push(Math.sqrt(sumSq));
+        }
+
+        let normMin = Infinity, normMax = -Infinity, normSum = 0;
+        for (const n of norms) {
+            if (n < normMin) normMin = n;
+            if (n > normMax) normMax = n;
+            normSum += n;
+        }
+        const normMean = normSum / norms.length;
+
+        // Find patches with unusually high/low norms (potential anomaly indicators)
+        const normStdDev = Math.sqrt(norms.reduce((s, n) => s + (n - normMean) ** 2, 0) / norms.length);
+        const anomalyPatches = norms
+            .map((n, i) => ({ idx: i, norm: n, zScore: (n - normMean) / (normStdDev + 1e-8) }))
+            .filter(p => Math.abs(p.zScore) > 1.5)
+            .sort((a, b) => Math.abs(b.zScore) - Math.abs(a.zScore));
+
+        sections.push(`Embedding Norms: mean=${normMean.toFixed(3)}, std=${normStdDev.toFixed(3)}, range=[${normMin.toFixed(3)}, ${normMax.toFixed(3)}], dim=${D}`);
+
+        if (anomalyPatches.length > 0) {
+            const anomStr = anomalyPatches.slice(0, 5).map(p => {
+                const row = Math.floor(p.idx / gridSize);
+                const col = p.idx % gridSize;
+                return `grid[${row},${col}] norm=${p.norm.toFixed(3)} z=${p.zScore.toFixed(2)}`;
+            }).join('; ');
+            sections.push(`Feature Anomaly Patches (|z|>1.5): ${anomStr}`);
+            sections.push(`Anomaly Count: ${anomalyPatches.length}/${N} patches (${(anomalyPatches.length / N * 100).toFixed(1)}%) show unusual feature activation`);
+        }
+    }
+
+    if (sections.length === 0) {
+        return 'Vision encoder produced no analyzable outputs.';
+    }
+
+    return '[Vision Encoder ECG Analysis]\n' + sections.join('\n');
+}
+
 // --- Main Handler ---
 let outputDir = null;
 
@@ -194,9 +385,14 @@ parentPort.on('message', async (msg) => {
             const output = await visionSession.run(feeds);
             const heatmapPath = await generateHeatmapOverlay(imagePath, output);
 
+            // Extract vision description for LLM
+            const visionDescription = extractVisionDescription(output);
+            console.log(`[Worker] Vision Description:\n${visionDescription}`);
+
             parentPort.postMessage({
                 type: 'result',
-                heatmap: heatmapPath
+                heatmap: heatmapPath,
+                visionDescription: visionDescription
             });
 
         } catch (e) {

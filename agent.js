@@ -154,6 +154,10 @@ const GraphState = Annotation.Root({
         reducer: (x, y) => y,
         default: () => null,
     }),
+    visionDescription: Annotation({
+        reducer: (x, y) => y,
+        default: () => "No vision analysis available.",
+    }),
     clinicalAssessment: Annotation({
         reducer: (x, y) => y,
         default: () => "Assessment pending.",
@@ -192,9 +196,10 @@ async function ecgNode(state) {
     try {
         const result = await runVisionTask('analyze', { imagePath: ecgPath });
         return {
-            ecgFindings: result.description, // Direct mapping from Worker
-            heatmapPath: result.heatmap, // Map 'heatmap' from worker to 'heatmapPath' in state
-            ecgPath: ecgPath // Save path for synthesis node
+            ecgFindings: result.visionDescription || "Vision analysis completed.",
+            heatmapPath: result.heatmap,
+            ecgPath: ecgPath,
+            visionDescription: result.visionDescription || "No vision features extracted."
         };
     } catch (e) {
         console.error("ECG Worker Error:", e);
@@ -248,45 +253,40 @@ async function pdfNode(state) {
 
 async function synthesisNode(state) {
     const pdfData = state.reportFindings;
-    const ecgPath = state.ecgPath; // Get ECG Path
+    const ecgPath = state.ecgPath;
+    const visionDescription = state.visionDescription;
     const lastMessage = state.messages[state.messages.length - 1];
     let userQuery = lastMessage.content;
 
     // Sanitize the query to prevent filename bias
-    // e.g. "Please analyze this patient case. [ECG: path/to/STEMI.jpg]" -> "Please analyze this patient case. [ECG Image Attached]"
     userQuery = userQuery.replace(/\[ECG: .*?\]/g, "[ECG Image Attached]");
     userQuery = userQuery.replace(/\[Report: .*?\]/g, "[Medical Report Attached]");
 
-    const context = `
-Clinical Report / Patient History (Context):
-${pdfData}
-    `.trim();
+    // Build prompt with actual vision encoder features
+    let prompt = "";
 
-    // Use the EXACT prompt the model was fine-tuned on for best results
-    let prompt = "<image>\nReview the ECG signal image and produce a detailed report on your diagnostic observations, ending with the final diagnosis.";
+    // Inject vision encoder analysis if available
+    if (visionDescription && visionDescription !== "No vision analysis available.") {
+        prompt += `The following is the output of a medical vision encoder that analyzed the uploaded ECG image. Use these features to guide your diagnostic observations:\n\n${visionDescription}\n\n`;
+    }
 
-    // If PDF report data exists, append it to the end of the prompt safely
+    prompt += "Based on the above vision encoder analysis of the ECG image, produce a detailed clinical report on your diagnostic observations. Include rhythm analysis, rate assessment, interval measurements, axis evaluation, ST-T wave changes, and end with the final diagnosis.";
+
+    // If PDF report data exists, append it
     if (pdfData && pdfData !== "No Medical Report provided.") {
         prompt += `\n\n[Clinical Context from Provided Medical Report]:\n${pdfData}`;
     }
 
-    console.log("Generating Assessment using Fine-Tuned Prompt...");
+    console.log("Generating Assessment with Vision Features...");
+    console.log("Prompt length:", prompt.length, "chars");
 
     try {
-        // Speculative Multimodal Prompting
-        // We attempt to pass the image via options if supported
         const promptOptions = {
             maxTokens: 1024,
             temperature: 0.1,
             topP: 0.9,
             repeatPenalty: 1.2
         };
-
-        if (ecgPath) {
-            console.log("Passing Image to LLM (Speculative)...");
-            // Some bindings use 'images' array in options
-            promptOptions.images = [ecgPath];
-        }
 
         const response = await llamaSession.prompt(prompt, promptOptions);
 
