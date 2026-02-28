@@ -216,7 +216,7 @@ async function synthesisNode(state) {
     console.log("Generating Assessment via llama-server...");
 
     // Fetch generation settings from DB
-    const temp = parseFloat(database.getSetting('model_temp') || '0.2');
+    const temp = parseFloat(database.getSetting('model_temp') || '0.1');
     const repeat = parseFloat(database.getSetting('model_repeat') || '1.3');
     const maxTokens = parseInt(database.getSetting('model_tokens') || '1024', 10);
 
