@@ -141,72 +141,76 @@ async function chatNode(state) {
     return { messages: [new AIMessage({ content: response })] };
 }
 
-async function ecgNode(state) {
-    const lastMessage = state.messages[state.messages.length - 1];
-    const content = lastMessage.content;
-
-    // Extract ECG Path
-    const ecgMatch = content.match(/\[ECG: (.*?)\]/);
-    if (!ecgMatch) return { ecgFindings: "No ECG provided." };
-
-    const ecgPath = ecgMatch[1];
-    console.log("Processing ECG (Worker):", ecgPath);
-
-    try {
-        const result = await runVisionTask('analyze', { imagePath: ecgPath });
-        return {
-            ecgFindings: "ECG image analyzed by vision encoder.",
-            heatmapPath: result.heatmap,
-            ecgPath: ecgPath
-        };
-    } catch (e) {
-        console.error("ECG Worker Error:", e);
-        return { ecgFindings: "Error analyzing ECG: " + e.message };
-    }
-}
-
-async function pdfNode(state) {
+async function prepareDataNode(state) {
     const lastMessage = state.messages[state.messages.length - 1];
     const content = lastMessage.content;
     const userQuery = content;
 
+    let updates = {};
+    const tasks = [];
+
+    // Extract ECG Path
+    const ecgMatch = content.match(/\[ECG: (.*?)\]/);
+    if (ecgMatch) {
+        tasks.push((async () => {
+            const ecgPath = ecgMatch[1];
+            console.log("Processing ECG (Worker):", ecgPath);
+            try {
+                const result = await runVisionTask('analyze', { imagePath: ecgPath });
+                updates.ecgFindings = "ECG image analyzed by vision encoder.";
+                updates.heatmapPath = result.heatmap;
+                updates.ecgPath = ecgPath;
+            } catch (e) {
+                console.error("ECG Worker Error:", e);
+                updates.ecgFindings = "Error analyzing ECG: " + e.message;
+                updates.ecgPath = ecgPath;
+            }
+        })());
+    } else {
+        updates.ecgFindings = "No ECG provided.";
+    }
+
     // Extract PDF Path
     const pdfMatch = content.match(/\[Report: (.*?)\]/);
-    if (!pdfMatch) return { reportFindings: "No Medical Report provided." };
+    if (pdfMatch) {
+        tasks.push((async () => {
+            const pdfPath = pdfMatch[1];
+            console.log(`Reading PDF: ${pdfPath}`);
+            try {
+                const data = new Uint8Array(fs.readFileSync(pdfPath));
+                const fontDir = path.join(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'), '../standard_fonts/');
+                const fontPath = fontDir.split(path.sep).join('/') + '/';
 
-    const pdfPath = pdfMatch[1];
-    try {
-        console.log(`Reading PDF: ${pdfPath}`);
-        const data = new Uint8Array(fs.readFileSync(pdfPath));
+                const loadingTask = pdfjsLib.getDocument({
+                    data: data,
+                    standardFontDataUrl: fontPath
+                });
 
-        const fontDir = path.join(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'), '../standard_fonts/');
-        const fontPath = fontDir.split(path.sep).join('/') + '/';
+                const doc = await loadingTask.promise;
+                let fullText = "";
+                for (let i = 1; i <= doc.numPages; i++) {
+                    const page = await doc.getPage(i);
+                    const textContent = await page.getTextContent();
+                    fullText += textContent.items.map(item => item.str).join(" ") + "\n";
+                }
 
-        const loadingTask = pdfjsLib.getDocument({
-            data: data,
-            standardFontDataUrl: fontPath
-        });
+                console.log(`PDF Text Extracted. Length: ${fullText.length}`);
+                console.log("Requesting RAG Context from Worker...");
+                const result = await runRagTask('retrieve', { text: fullText, query: userQuery });
+                console.log("RAG Context Received:", result.context.length, "chars");
 
-        const doc = await loadingTask.promise;
-        let fullText = "";
-        for (let i = 1; i <= doc.numPages; i++) {
-            const page = await doc.getPage(i);
-            const textContent = await page.getTextContent();
-            fullText += textContent.items.map(item => item.str).join(" ") + "\n";
-        }
-
-        console.log(`PDF Text Extracted. Length: ${fullText.length}`);
-
-        console.log("Requesting RAG Context from Worker...");
-        const result = await runRagTask('retrieve', { text: fullText, query: userQuery });
-        console.log("RAG Context Received:", result.context.length, "chars");
-
-        return { reportFindings: result.context };
-
-    } catch (error) {
-        console.error("PDF/RAG Processing Error:", error);
-        return { reportFindings: "Error analyzing PDF." };
+                updates.reportFindings = result.context;
+            } catch (error) {
+                console.error("PDF/RAG Processing Error:", error);
+                updates.reportFindings = "Error analyzing PDF.";
+            }
+        })());
+    } else {
+        updates.reportFindings = "No Medical Report provided.";
     }
+
+    await Promise.all(tasks);
+    return updates;
 }
 
 async function synthesisNode(state) {
@@ -214,11 +218,15 @@ async function synthesisNode(state) {
     const ecgPath = state.ecgPath;
 
     console.log("Generating Assessment via llama-server...");
+    console.log(`[SynthesisNode] reportFindings: "${pdfData ? pdfData.substring(0, 200) : 'NONE'}..."`);
+    console.log(`[SynthesisNode] ecgPath: ${ecgPath || 'NONE'}`);
 
     // Fetch generation settings from DB
     const temp = parseFloat(database.getSetting('model_temp') || '0.1');
     const repeat = parseFloat(database.getSetting('model_repeat') || '1.3');
     const maxTokens = parseInt(database.getSetting('model_tokens') || '1024', 10);
+
+    const hasReport = pdfData && pdfData !== "No Medical Report provided.";
 
     try {
         let response;
@@ -231,8 +239,43 @@ async function synthesisNode(state) {
             const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
             console.log(`Image encoded: ${(base64Image.length / 1024).toFixed(1)} KB base64`);
 
-            // Build multimodal content array for /v1/chat/completions
-            let textPrompt = `You are an expert cardiologist analyzing a 12-lead ECG image. Produce a concise, accurate clinical report with these sections:
+            let textPrompt;
+
+            if (hasReport) {
+                // Combined ECG + Blood Report prompt
+                textPrompt = `You are an expert cardiologist performing a COMBINED analysis of:
+1. A 12-lead ECG image (attached)
+2. A patient's blood/lab report (provided below)
+
+You MUST produce an INTEGRATED clinical report that correlates BOTH the ECG findings AND the lab results together. Use the following sections:
+
+## 1. ECG Analysis
+Analyze the ECG image: rhythm, rate, intervals (PR, QRS, QT), axis, ST-T wave changes.
+
+## 2. Lab Report Findings
+Summarize the key lab values from the blood report below. Highlight any abnormal values (e.g., elevated troponin, abnormal electrolytes, anemia, thyroid dysfunction, high BNP).
+
+## 3. Combined Clinical Assessment
+This is the MOST IMPORTANT section. Correlate the ECG findings with the lab values to produce a unified diagnosis. For example:
+- If the ECG shows arrhythmia AND labs show electrolyte imbalance (low potassium/magnesium), note the correlation.
+- If the ECG shows ST changes AND troponin is elevated, flag acute coronary syndrome risk.
+- If labs show anemia AND ECG shows tachycardia, note compensatory response.
+- If thyroid labs are abnormal AND ECG shows rate changes, correlate.
+
+## 4. Risk Assessment & Next Steps
+Based on BOTH ECG and lab findings together, recommend next steps.
+
+## 5. Lifestyle Recommendations
+Diet, exercise, and lifestyle modifications based on the combined findings.
+
+IMPORTANT: Do NOT analyze the ECG in isolation. You MUST reference specific lab values in your diagnosis. If the labs are normal, explicitly state that the normal lab values rule out certain conditions suggested by the ECG.
+
+=== PATIENT LAB REPORT ===
+${pdfData}
+=== END LAB REPORT ===`;
+            } else {
+                // ECG-only prompt
+                textPrompt = `You are an expert cardiologist analyzing a 12-lead ECG image. Produce a concise, accurate clinical report with these sections:
 1. Rhythm Analysis
 2. Rate Assessment  
 3. Interval Measurements (PR, QRS, QT)
@@ -241,9 +284,6 @@ async function synthesisNode(state) {
 6. Final Diagnosis
 
 IMPORTANT: Only report abnormalities you can clearly identify in the image. If the ECG appears normal, state 'Normal sinus rhythm' and note the absence of pathology. Do not speculate about conditions not visible in the tracing.`;
-
-            if (pdfData && pdfData !== "No Medical Report provided.") {
-                textPrompt += `\n\nClinical Context from Medical Report:\n${pdfData}`;
             }
 
             const messages = [{
@@ -268,9 +308,9 @@ IMPORTANT: Only report abnormalities you can clearly identify in the image. If t
                 repeatPenalty: repeat
             });
         } else {
-            // Text-only fallback
+            // Text-only fallback (PDF only, no ECG)
             let prompt = "Based on the provided clinical data, produce a detailed diagnostic assessment.";
-            if (pdfData && pdfData !== "No Medical Report provided.") {
+            if (hasReport) {
                 prompt += `\n\nClinical Context from Medical Report:\n${pdfData}`;
             }
             response = await chatCompletion([{ role: "user", content: prompt }], {
@@ -332,9 +372,7 @@ function routeRequest(state) {
     const hasECG = content.includes("[ECG:");
     const hasPDF = content.includes("[Report:");
 
-    if (hasECG && hasPDF) return ["ecgNode", "pdfNode"];
-    if (hasECG) return "ecgNode";
-    if (hasPDF) return "pdfNode";
+    if (hasECG || hasPDF) return "prepareDataNode";
     return "chat";
 }
 
@@ -342,13 +380,11 @@ function routeRequest(state) {
 const workflow = new StateGraph(GraphState)
     .addNode("router", entryNode)
     .addNode("chat", chatNode)
-    .addNode("ecgNode", ecgNode)
-    .addNode("pdfNode", pdfNode)
+    .addNode("prepareDataNode", prepareDataNode)
     .addNode("synthesisNode", synthesisNode)
     .addEdge(START, "router")
-    .addConditionalEdges("router", routeRequest, ["chat", "ecgNode", "pdfNode"])
-    .addEdge("ecgNode", "synthesisNode")
-    .addEdge("pdfNode", "synthesisNode")
+    .addConditionalEdges("router", routeRequest, ["chat", "prepareDataNode"])
+    .addEdge("prepareDataNode", "synthesisNode")
     .addEdge("synthesisNode", END)
     .addEdge("chat", END);
 

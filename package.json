@@ -73,7 +73,8 @@
       "!**/*.ipynb",
       "!src-tauri/*",
       "!model/**",
-      "!onnx_export/**"
+      "!onnx_export/**",
+      "!hf_space/**"
     ],
     "asar": true,
     "asarUnpack": [
