@@ -3,7 +3,7 @@ import { app, BrowserWindow, ipcMain, protocol } from "electron";
 import path from "path";
 import fs from "fs-extra";
 import { database } from "./database.js";
-import { appAgent, initializeAI } from "./agent.js";
+import { appAgent, initializeAI, stopServer } from "./agent.js";
 import { ensureModelsDownloaded } from "./model_downloader.js";
 import { fileURLToPath } from "url";
 
@@ -82,9 +82,16 @@ app.whenReady().then(async () => {
     app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
+
+    // Clean shutdown of llama-server
+    app.on('before-quit', () => {
+        console.log('Stopping llama-server before quit...');
+        stopServer();
+    });
 });
 
 app.on("window-all-closed", () => {
+    stopServer();
     if (process.platform !== "darwin") app.quit();
 });
 

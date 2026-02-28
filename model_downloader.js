@@ -3,6 +3,8 @@ import https from 'https';
 import http from 'http';
 import fs from 'fs-extra';
 import path from 'path';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 
 // --- Model Definitions ---
 const MODEL_FILES = [
@@ -23,6 +25,14 @@ const MODEL_FILES = [
         url: 'https://storage.googleapis.com/courseai/vision_encoder_quant.onnx',
         expectedSize: 422088402, // ~422 MB
         subDir: 'models'
+    },
+    {
+        name: 'llama-server-b7836-win-vulkan-x64.zip',
+        url: 'https://github.com/ggml-org/llama.cpp/releases/download/b7836/llama-b7836-bin-win-vulkan-x64.zip',
+        expectedSize: 46673291, // ~46 MB (Vulkan, supports NVIDIA/AMD/Intel GPUs)
+        subDir: 'models',
+        isZip: true,
+        extractAll: true // extract all .exe and .dll files
     }
 ];
 
@@ -81,6 +91,28 @@ function downloadFile(url, destPath, onProgress) {
             reject(err);
         });
     });
+}
+
+/**
+ * Extract files from a zip archive.
+ * If extractAll=true, extracts all .exe and .dll files (flattened to outputDir).
+ */
+async function extractFromZip(zipPath, outputDir, options = {}) {
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(zipPath);
+    const entries = zip.getEntries();
+
+    let extracted = 0;
+    for (const entry of entries) {
+        if (entry.isDirectory) continue;
+        const name = path.basename(entry.entryName);
+        if (name.endsWith('.exe') || name.endsWith('.dll')) {
+            const outPath = path.join(outputDir, name);
+            fs.writeFileSync(outPath, entry.getData());
+            extracted++;
+        }
+    }
+    console.log(`[Downloader] Extracted ${extracted} files from zip to ${outputDir}`);
 }
 
 /**
@@ -164,6 +196,16 @@ export async function ensureModelsDownloaded(modelsDir, onProgress) {
             }
 
             console.log(`[Downloader] ${model.name} downloaded and verified successfully.`);
+
+            // Handle zip extraction if needed
+            if (model.isZip && model.extractAll) {
+                const serverExe = path.join(modelsDir, 'llama-server.exe');
+                if (!await fs.pathExists(serverExe)) {
+                    await extractFromZip(filePath, modelsDir);
+                } else {
+                    console.log(`[Downloader] llama-server.exe already extracted. Skipping.`);
+                }
+            }
 
             if (onProgress) {
                 onProgress({

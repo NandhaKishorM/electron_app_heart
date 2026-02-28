@@ -1,8 +1,6 @@
 
 import { StateGraph, END, START, Annotation } from "@langchain/langgraph";
-import { ChatLlamaCpp } from "@langchain/community/chat_models/llama_cpp";
-import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
-import { getLlama, LlamaChatSession, LlamaJsonSchemaGrammar } from "node-llama-cpp";
+import { AIMessage } from "@langchain/core/messages";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs-extra";
@@ -11,31 +9,12 @@ import { createRequire } from "module";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { Worker } from "worker_threads";
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { zodToJsonSchema } from "zod-to-json-schema";
-import { z } from "zod";
 
+import { startServer, chatCompletion, multimodalCompletion, stopServer } from './llama_server.js';
 
 const require = createRequire(import.meta.url);
 
-// Define Schema using Zod
-const AssessmentSchema = z.object({
-    ecg_findings: z.string().describe("Comprehensive narrative detailing all ECG findings, including rhythm, rate, intervals, axis, and specific ST-T wave changes. Explain the significance of each finding."),
-    report_findings: z.string().describe("Detailed clinical report summary, listing all abnormal lab values with their units and reference ranges. explain the clinical implications of these abnormalities."),
-    clinical_assessment: z.string().describe("A holistic and detailed clinical assessment connecting the ECG findings with the laboratory results. Discuss potential diagnoses, differential diagnoses, and the overall severity of the patient's condition. Do not just list findings; synthesize them."),
-    next_steps: z.array(z.string()).min(1).describe("List of at least 3 specific and actionable next steps, including confirmatory tests, specialist referrals, and immediate interventions."),
-    lifestyle_recommendations: z.array(z.string()).min(1).describe("List of at least 3 detailed lifestyle modifications, including specific dietary changes, activity restrictions, and symptom monitoring advice.")
-});
-
-// --- Configuration (set dynamically at init) ---
-let MODEL_PATH = null;
-let MMPROJ_PATH = null;
-
-// --- Model Initialization (Singleton) ---
-let llama = null;
-let llamaModel = null;
-let llamaContext = null;
-let llamaSession = null;
-// --- Worker Initialization ---
+// --- Workers ---
 let visionWorker = null;
 let ragWorker = null;
 
@@ -69,70 +48,45 @@ function runRagTask(type, data = {}) {
 export async function initializeAI(onProgress, modelsDir) {
     if (!modelsDir) throw new Error("modelsDir is required for initializeAI");
 
-    // Set model paths from the provided models directory
-    MODEL_PATH = path.join(modelsDir, "ggml-model-q4_k_m.gguf");
-    MMPROJ_PATH = path.join(modelsDir, "mmproj-medgemma-4b-ecginstruct-F16.gguf");
-
     if (onProgress) onProgress("Starting AI Initialization...", 10);
 
-    if (!llama) {
-        console.log("Loading MedGemma Model...");
-        try {
-            llama = await getLlama();
-            if (onProgress) onProgress("Loading Model File...", 30);
-
-            // ATTEMPT MULTIMODAL LOAD
-            console.log(`Checking for MMProj at: ${MMPROJ_PATH}`);
-            const hasMMProj = await fs.pathExists(MMPROJ_PATH);
-
-            if (hasMMProj) {
-                console.log("Loading Multimodal Projector...");
-                llamaModel = await llama.loadModel({
-                    modelPath: MODEL_PATH,
-                    // Speculative: passing visual options if supported by binding
-                    visual: {
-                        modelPath: MMPROJ_PATH
-                    }
-                });
-            } else {
-                console.warn("MMProj file not found. Loading text-only model.");
-                llamaModel = await llama.loadModel({ modelPath: MODEL_PATH });
-            }
-
-            if (onProgress) onProgress("Creating Context...", 50);
-            llamaContext = await llamaModel.createContext(); // Default context size
-            if (onProgress) onProgress("Creating Session...", 70);
-            llamaSession = new LlamaChatSession({ contextSequence: llamaContext.getSequence() });
-            console.log("MedGemma Model Loaded.");
-        } catch (err) {
-            console.error("Failed to load MedGemma:", err);
-            throw err;
+    // 1. Start llama-server with multimodal support
+    if (onProgress) onProgress("Starting llama-server...", 20);
+    console.log("Starting llama-server subprocess...");
+    await startServer(modelsDir, (msg) => {
+        // Forward server logs as progress
+        if (msg.includes('model loaded') || msg.includes('loaded successfully')) {
+            if (onProgress) onProgress("Model loaded in server", 60);
         }
-    }
+    });
+    console.log("llama-server is ready.");
+    if (onProgress) onProgress("llama-server ready", 65);
 
+    // 2. Initialize Vision Worker (for heatmap generation)
     if (!visionWorker) {
         console.log("Initializing Vision Worker...");
-        // Use the correct worker file
+        if (onProgress) onProgress("Loading Vision Encoder...", 70);
         visionWorker = new Worker(path.join(__dirname, "vision_worker.mjs"));
         const onnxPath = path.join(modelsDir, "vision_encoder_quant.onnx");
-        await runVisionTask('init', { onnxPath });
+        const heatmapDir = path.join(path.dirname(modelsDir), 'heatmaps');
+        await fs.ensureDir(heatmapDir);
+        await runVisionTask('init', { onnxPath, outputDir: heatmapDir });
         console.log("Vision Worker Ready.");
     }
 
+    // 3. Initialize RAG Worker
     if (!ragWorker) {
         console.log("Initializing RAG Worker...");
-        if (onProgress) onProgress("Loading Embeddings...", 80);
+        if (onProgress) onProgress("Loading Embeddings...", 85);
         ragWorker = new Worker(path.join(__dirname, "rag_worker.js"));
-        await runRagTask('init'); // Pre-load embeddings in worker
+        await runRagTask('init');
         console.log("RAG Worker Ready.");
     }
 
     if (onProgress) onProgress("AI System Ready", 100);
 }
 
-// --- Nodes ---
-
-// Agent State Definition
+// --- Agent State Definition ---
 const GraphState = Annotation.Root({
     messages: Annotation({
         reducer: (x, y) => x.concat(y),
@@ -142,7 +96,7 @@ const GraphState = Annotation.Root({
         reducer: (x, y) => y,
         default: () => "No ECG data provided.",
     }),
-    ecgPath: Annotation({ // Added ecgPath
+    ecgPath: Annotation({
         reducer: (x, y) => y,
         default: () => null,
     }),
@@ -153,10 +107,6 @@ const GraphState = Annotation.Root({
     heatmapPath: Annotation({
         reducer: (x, y) => y,
         default: () => null,
-    }),
-    visionDescription: Annotation({
-        reducer: (x, y) => y,
-        default: () => "No vision analysis available.",
     }),
     clinicalAssessment: Annotation({
         reducer: (x, y) => y,
@@ -172,13 +122,17 @@ const GraphState = Annotation.Root({
     })
 });
 
+// --- Nodes ---
+
 async function entryNode(state) {
     return {};
 }
 
 async function chatNode(state) {
     const query = state.messages[state.messages.length - 1].content;
-    const response = await llamaSession.prompt(query);
+    const response = await chatCompletion([
+        { role: "user", content: query }
+    ]);
     return { messages: [new AIMessage({ content: response })] };
 }
 
@@ -196,10 +150,9 @@ async function ecgNode(state) {
     try {
         const result = await runVisionTask('analyze', { imagePath: ecgPath });
         return {
-            ecgFindings: result.visionDescription || "Vision analysis completed.",
+            ecgFindings: "ECG image analyzed by vision encoder.",
             heatmapPath: result.heatmap,
-            ecgPath: ecgPath,
-            visionDescription: result.visionDescription || "No vision features extracted."
+            ecgPath: ecgPath
         };
     } catch (e) {
         console.error("ECG Worker Error:", e);
@@ -243,7 +196,7 @@ async function pdfNode(state) {
         const result = await runRagTask('retrieve', { text: fullText, query: userQuery });
         console.log("RAG Context Received:", result.context.length, "chars");
 
-        return { reportFindings: result.context }; // Map to reportFindings
+        return { reportFindings: result.context };
 
     } catch (error) {
         console.error("PDF/RAG Processing Error:", error);
@@ -254,98 +207,96 @@ async function pdfNode(state) {
 async function synthesisNode(state) {
     const pdfData = state.reportFindings;
     const ecgPath = state.ecgPath;
-    const visionDescription = state.visionDescription;
-    const lastMessage = state.messages[state.messages.length - 1];
-    let userQuery = lastMessage.content;
 
-    // Sanitize the query to prevent filename bias
-    userQuery = userQuery.replace(/\[ECG: .*?\]/g, "[ECG Image Attached]");
-    userQuery = userQuery.replace(/\[Report: .*?\]/g, "[Medical Report Attached]");
-
-    // Build prompt with actual vision encoder features
-    let prompt = "";
-
-    // Inject vision encoder analysis if available
-    if (visionDescription && visionDescription !== "No vision analysis available.") {
-        prompt += `The following is the output of a medical vision encoder that analyzed the uploaded ECG image. Use these features to guide your diagnostic observations:\n\n${visionDescription}\n\n`;
-    }
-
-    prompt += "Based on the above vision encoder analysis of the ECG image, produce a detailed clinical report on your diagnostic observations. Include rhythm analysis, rate assessment, interval measurements, axis evaluation, ST-T wave changes, and end with the final diagnosis.";
-
-    // If PDF report data exists, append it
-    if (pdfData && pdfData !== "No Medical Report provided.") {
-        prompt += `\n\n[Clinical Context from Provided Medical Report]:\n${pdfData}`;
-    }
-
-    console.log("Generating Assessment with Vision Features...");
-    console.log("Prompt length:", prompt.length, "chars");
+    console.log("Generating Assessment via llama-server...");
 
     try {
-        const promptOptions = {
-            maxTokens: 1024,
-            temperature: 0.1,
-            topP: 0.9,
-            repeatPenalty: 1.2
-        };
+        let response;
 
-        const response = await llamaSession.prompt(prompt, promptOptions);
+        if (ecgPath && await fs.pathExists(ecgPath)) {
+            console.log("Encoding ECG image for multimodal inference...");
+            const imageBuffer = await fs.readFile(ecgPath);
+            const base64Image = imageBuffer.toString('base64');
+            const ext = path.extname(ecgPath).toLowerCase();
+            const mimeType = ext === '.png' ? 'image/png' : 'image/jpeg';
+            console.log(`Image encoded: ${(base64Image.length / 1024).toFixed(1)} KB base64`);
 
-        console.log("Structured Text Generated. Parsing...");
+            // Build multimodal content array for /v1/chat/completions
+            let textPrompt = "You are a cardiologist analyzing an ECG. Review the ECG image and produce a single, concise clinical report. Include: Rhythm Analysis, Rate Assessment, Interval Measurements, Axis Evaluation, ST-T Wave Changes, and Final Diagnosis.";
 
-        // Orchestrator Parsing Logic
-        let assessment = "Assessment could not be parsed.";
+            if (pdfData && pdfData !== "No Medical Report provided.") {
+                textPrompt += `\n\nClinical Context from Medical Report:\n${pdfData}`;
+            }
+
+            const messages = [{
+                role: "user",
+                content: [
+                    {
+                        type: "image_url",
+                        image_url: { url: `data:${mimeType};base64,${base64Image}` }
+                    },
+                    {
+                        type: "text",
+                        text: textPrompt
+                    }
+                ]
+            }];
+
+            console.log("Sending multimodal request to llama-server...");
+            response = await chatCompletion(messages, {
+                maxTokens: 1024,
+                temperature: 0.7,
+                topP: 0.9,
+                repeatPenalty: 1.3
+            });
+        } else {
+            // Text-only fallback
+            let prompt = "Based on the provided clinical data, produce a detailed diagnostic assessment.";
+            if (pdfData && pdfData !== "No Medical Report provided.") {
+                prompt += `\n\nClinical Context from Medical Report:\n${pdfData}`;
+            }
+            response = await chatCompletion([{ role: "user", content: prompt }], {
+                maxTokens: 1024,
+                temperature: 0.7,
+                repeatPenalty: 1.3
+            });
+        }
+
+        console.log("Response received. Length:", response.length);
+
+        // Parse the response into sections
+        let assessment = response.trim();
         let nextSteps = [];
         let lifestyle = [];
 
-        try {
-            // Since we reverted to the strict training prompt, the model will output a narrative report
-            // rather than strictly formatted headers. We use the full output as the primary assessment.
-            assessment = response.trim();
+        const sentences = assessment.split(/(?<=\.)\s+/);
+        let currentSection = "assessment";
+        let assessmentText = [];
 
-            // Try to loosely extract "Next Steps" or "Recommendations" if the model happened to list them.
-            // If not, we just present the raw report.
-            const sentences = assessment.split(/(?<=\.)\s+/);
-
-            let currentSection = "assessment";
-            let assessmentText = [];
-
-            for (const sentence of sentences) {
-                const lower = sentence.toLowerCase();
-                if (lower.includes("recommend") || lower.includes("next step") || lower.includes("further evaluation") || lower.includes("referral")) {
-                    currentSection = "nextSteps";
-                }
-
-                if (currentSection === "assessment") {
-                    assessmentText.push(sentence);
-                } else {
-                    // Very rudimentary sorting
-                    if (lower.includes("diet") || lower.includes("smoke") || lower.includes("exercise") || lower.includes("lifestyle")) {
-                        lifestyle.push("• " + sentence);
-                    } else {
-                        nextSteps.push("• " + sentence);
-                    }
-                }
+        for (const sentence of sentences) {
+            const lower = sentence.toLowerCase();
+            if (lower.includes("recommend") || lower.includes("next step") || lower.includes("further evaluation") || lower.includes("referral")) {
+                currentSection = "nextSteps";
             }
 
-            // We use the full text as the ECG findings / Assessment to not lose data
-            let combinedAssessment = assessment;
-
-            return {
-                ecgFindings: combinedAssessment,
-                clinicalAssessment: combinedAssessment,
-                nextSteps: nextSteps.length > 0 ? nextSteps : ["Please review the assessment above for specific steps."],
-                lifestyleRecommendations: lifestyle.length > 0 ? lifestyle : ["Maintain heart-healthy habits; consult physician for specifics."],
-                messages: [new AIMessage({ content: "Analysis Complete" })]
-            };
-
-        } catch (parseError) {
-            console.error("Parsing Error:", parseError);
-            assessment = response; // Fallback to raw response
-            return {
-                clinicalAssessment: assessment,
-                messages: [new AIMessage({ content: "Analysis Complete (Parse Error)" })]
-            };
+            if (currentSection === "assessment") {
+                assessmentText.push(sentence);
+            } else {
+                if (lower.includes("diet") || lower.includes("smoke") || lower.includes("exercise") || lower.includes("lifestyle")) {
+                    lifestyle.push("• " + sentence);
+                } else {
+                    nextSteps.push("• " + sentence);
+                }
+            }
         }
+
+        return {
+            ecgFindings: assessment,
+            clinicalAssessment: assessment,
+            nextSteps: nextSteps.length > 0 ? nextSteps : ["Please review the assessment above for specific steps."],
+            lifestyleRecommendations: lifestyle.length > 0 ? lifestyle : ["Maintain heart-healthy habits; consult physician for specifics."],
+            messages: [new AIMessage({ content: "Analysis Complete" })]
+        };
 
     } catch (e) {
         console.error("Synthesis Error:", e);
@@ -384,3 +335,4 @@ const workflow = new StateGraph(GraphState)
     .addEdge("chat", END);
 
 export const appAgent = workflow.compile();
+export { stopServer };
