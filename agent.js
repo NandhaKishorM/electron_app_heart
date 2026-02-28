@@ -11,6 +11,7 @@ import { Worker } from "worker_threads";
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 import { startServer, chatCompletion, multimodalCompletion, stopServer } from './llama_server.js';
+import { database } from './database.js';
 
 const require = createRequire(import.meta.url);
 
@@ -50,10 +51,14 @@ export async function initializeAI(onProgress, modelsDir) {
 
     if (onProgress) onProgress("Starting AI Initialization...", 10);
 
+    // Read GPU layers config from DB, default to 10
+    const gpuLayers = database.getSetting('gpu_layers') || '10';
+
     // 1. Start llama-server with multimodal support
-    if (onProgress) onProgress("Starting llama-server...", 20);
-    console.log("Starting llama-server subprocess...");
-    await startServer(modelsDir, (msg) => {
+    if (onProgress) onProgress(`Starting llama-server (GPU Layers: ${gpuLayers})...`, 20);
+    console.log(`Starting llama-server subprocess with ${gpuLayers} GPU layers...`);
+
+    await startServer(modelsDir, gpuLayers, (msg) => {
         // Forward server logs as progress
         if (msg.includes('model loaded') || msg.includes('loaded successfully')) {
             if (onProgress) onProgress("Model loaded in server", 60);
@@ -210,6 +215,11 @@ async function synthesisNode(state) {
 
     console.log("Generating Assessment via llama-server...");
 
+    // Fetch generation settings from DB
+    const temp = parseFloat(database.getSetting('model_temp') || '0.2');
+    const repeat = parseFloat(database.getSetting('model_repeat') || '1.3');
+    const maxTokens = parseInt(database.getSetting('model_tokens') || '1024', 10);
+
     try {
         let response;
 
@@ -252,10 +262,10 @@ IMPORTANT: Only report abnormalities you can clearly identify in the image. If t
 
             console.log("Sending multimodal request to llama-server...");
             response = await chatCompletion(messages, {
-                maxTokens: 1024,
-                temperature: 0.2,
+                maxTokens: maxTokens,
+                temperature: temp,
                 topP: 0.9,
-                repeatPenalty: 1.3
+                repeatPenalty: repeat
             });
         } else {
             // Text-only fallback
@@ -264,8 +274,8 @@ IMPORTANT: Only report abnormalities you can clearly identify in the image. If t
                 prompt += `\n\nClinical Context from Medical Report:\n${pdfData}`;
             }
             response = await chatCompletion([{ role: "user", content: prompt }], {
-                maxTokens: 1024,
-                temperature: 0.7,
+                maxTokens: maxTokens,
+                temperature: temp,
                 repeatPenalty: 1.3
             });
         }

@@ -707,19 +707,42 @@ const userIdInput = document.getElementById('user-id');
 const userDeptInput = document.getElementById('user-dept');
 const saveSettingsBtn = document.getElementById('save-settings-btn');
 
+const tempInput = document.getElementById('model-temp');
+const tempVal = document.getElementById('temp-val');
+const repeatInput = document.getElementById('model-repeat-penalty');
+const repeatVal = document.getElementById('repeat-val');
+const tokensInput = document.getElementById('model-max-tokens');
+const gpuInput = document.getElementById('model-gpu-layers');
+const saveModelBtn = document.getElementById('save-model-btn');
+
+// Slider live updates
+tempInput.addEventListener('input', () => tempVal.textContent = tempInput.value);
+repeatInput.addEventListener('input', () => repeatVal.textContent = repeatInput.value);
+
 async function loadSettings() {
     try {
         const settings = await window.api.getSettings(); // Returns array of {key, value}
         if (!settings) return;
 
-        const setVal = (key, input) => {
+        const setVal = (key, input, parser = String) => {
             const item = settings.find(s => s.key === key);
-            if (item) input.value = item.value;
+            if (item) input.value = parser(item.value);
         };
 
         setVal('user_name', userNameInput);
         setVal('user_id', userIdInput);
         setVal('user_dept', userDeptInput);
+
+        // Model Settings
+        setVal('model_temp', tempInput, Number);
+        setVal('model_repeat', repeatInput, Number);
+        setVal('model_tokens', tokensInput, Number);
+        setVal('gpu_layers', gpuInput, Number);
+
+        // Update slider texts
+        tempVal.textContent = tempInput.value;
+        repeatVal.textContent = repeatInput.value;
+
     } catch (e) {
         console.error("Failed to load settings:", e);
     }
@@ -730,10 +753,23 @@ saveSettingsBtn.addEventListener('click', async () => {
         await window.api.saveSetting('user_name', userNameInput.value);
         await window.api.saveSetting('user_id', userIdInput.value);
         await window.api.saveSetting('user_dept', userDeptInput.value);
-        alert("Settings saved successfully!");
+        alert("Profile saved successfully!");
     } catch (e) {
         console.error("Failed to save settings:", e);
         alert("Error saving settings.");
+    }
+});
+
+saveModelBtn.addEventListener('click', async () => {
+    try {
+        await window.api.saveSetting('model_temp', tempInput.value);
+        await window.api.saveSetting('model_repeat', repeatInput.value);
+        await window.api.saveSetting('model_tokens', tokensInput.value);
+        await window.api.saveSetting('gpu_layers', gpuInput.value);
+        alert("Model Settings saved! Note: GPU Layer changes require restarting the app.");
+    } catch (e) {
+        console.error("Failed to save model settings:", e);
+        alert("Error saving model settings.");
     }
 });
 

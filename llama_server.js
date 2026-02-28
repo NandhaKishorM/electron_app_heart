@@ -21,10 +21,11 @@ let serverReady = false;
 /**
  * Start the llama-server subprocess with multimodal support.
  * @param {string} modelsDir - Path to the directory containing model files
+ * @param {string|number} gpuLayers - Number of layers to offload to GPU
  * @param {function} onLog - Callback for server log messages
  * @returns {Promise<void>}
  */
-export async function startServer(modelsDir, onLog) {
+export async function startServer(modelsDir, gpuLayers = '10', onLog) {
     if (serverProcess) {
         console.log('[LlamaServer] Server already running.');
         return;
@@ -49,7 +50,7 @@ export async function startServer(modelsDir, onLog) {
         '--ctx-size', '4096',
         '--n-predict', '1024',
         '--threads', String(Math.max(1, Math.floor(os.cpus().length / 2))),
-        '--n-gpu-layers', '10', // Set higher (e.g. 999) if your GPU has enough VRAM
+        '--n-gpu-layers', String(gpuLayers),
     ];
 
     // Add mmproj if available (enables multimodal)
